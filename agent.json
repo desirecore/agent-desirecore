@@ -6,15 +6,10 @@
   "description": "系统中枢调度器，负责任务分发、Agent 编排与全局状态监控",
   "author": "DesireCore Team",
   "runtime": {
-    "engine": "pi-agent-core"
-  },
-  "privacy": {
-    "default_scope": "core",
-    "sharing_requires_explicit_consent": true
+    "engine": "desirecore-engine"
   },
   "heartbeat": {
-    "enabled": true,
-    "config_ref": "heartbeat/HEARTBEAT.md"
+    "enabled": true
   },
   "default_enabled": {
     "skills": [
