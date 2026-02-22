@@ -1,0 +1,30 @@
+{
+  "$schema": "http://desirecore/schemas/agent.json",
+  "id": "7da73b7f-bb08-4e7b-a3cf-5d4af6e22c7f",
+  "name": "DesireCore",
+  "version": "1.0.0",
+  "description": "系统中枢调度器，负责任务分发、Agent 编排与全局状态监控",
+  "author": "DesireCore Team",
+  "runtime": {
+    "engine": "pi-agent-core"
+  },
+  "privacy": {
+    "default_scope": "core",
+    "sharing_requires_explicit_consent": true
+  },
+  "heartbeat": {
+    "enabled": true,
+    "config_ref": "heartbeat/HEARTBEAT.md"
+  },
+  "default_enabled": {
+    "skills": [
+      "create-agent",
+      "update-agent",
+      "delete-agent",
+      "self-evolve",
+      "task-management",
+      "discover-agent"
+    ],
+    "tools": []
+  }
+}
