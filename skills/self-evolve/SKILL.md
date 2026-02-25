@@ -6,16 +6,6 @@ type: meta
 risk_level: high
 status: enabled
 disable-model-invocation: true
-requires:
-  tools:
-    - read_file
-    - write_file
-    - edit_file
-    - list_directory
-  optional_tools:
-    - search_files
-    - grep
-    - execute_command
 tags: [evolution, learning, meta]
 metadata:
   author: desirecore

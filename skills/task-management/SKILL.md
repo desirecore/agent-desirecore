@@ -6,12 +6,6 @@ type: procedural
 risk_level: low
 status: enabled
 disable-model-invocation: false
-requires:
-  tools:
-    - fetch_api
-  optional_tools:
-    - read_file
-    - list_directory
 tags: [task, management, orchestration]
 metadata:
   author: desirecore
