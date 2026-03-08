@@ -1,11 +1,11 @@
 ---
 name: task-management
 description: 创建、分配和跟踪任务，支持多 Agent 编排与进度追踪，确保每个任务被正确的 Agent 执行并按时完成。Use when 用户需要创建任务、指定执行者、查看任务进度，或需要协调多个 Agent 协作完成复杂任务。
-version: "1.1.0"
+version: "1.2.0"
 type: procedural
 risk_level: low
 status: enabled
-disable-model-invocation: false
+disable-model-invocation: true
 tags: [task, management, orchestration]
 metadata:
   author: desirecore
