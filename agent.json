@@ -8,6 +8,10 @@
   "runtime": {
     "engine": "desirecore-engine"
   },
+  "repository": {
+    "url": "https://github.com/desirecore/agent-desirecore.git",
+    "branch": "main"
+  },
   "heartbeat": {
     "enabled": true
   },
