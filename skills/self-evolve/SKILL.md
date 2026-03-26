@@ -1,7 +1,7 @@
 ---
-name: self-evolve
+name: 自我进化
 description: 在会话中提炼可复用经验，生成可审阅进化建议，并在用户确认后写回用户域或智能体域。Use when 用户显式教学、要求总结学习结果、希望持续优化 Agent，或在会话结束后执行进化复盘。
-version: "1.1.0"
+version: "1.2.0"
 type: meta
 risk_level: high
 status: enabled
