@@ -212,7 +212,7 @@ composite_task:
 
     - id: sub_4
       objective: "最终审核和格式化"
-      assignee: desirecore
+      assignee: report-reviewer
       depends_on: [sub_2, sub_3]
 ```
 
