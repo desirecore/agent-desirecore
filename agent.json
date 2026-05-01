@@ -1,13 +1,10 @@
 {
+  "name": "DesireCore",
   "$schema": "http://desirecore/schemas/agent.json",
   "id": "7da73b7f-bb08-4e7b-a3cf-5d4af6e22c7f",
-  "name": "DesireCore",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "系统中枢调度器，负责任务分发、Agent 编排与全局状态监控",
   "author": "DesireCore Team",
-  "runtime": {
-    "engine": "desirecore-engine"
-  },
   "repository": {
     "url": "https://github.com/desirecore/agent-desirecore.git",
     "branch": "main"
@@ -25,5 +22,22 @@
       "discover-agent"
     ],
     "tools": []
+  },
+  "mcp_servers": {},
+  "capabilities": [],
+  "trigger_patterns": [],
+  "accepts_handoff": true,
+  "accepts_messages": true,
+  "max_concurrent_sessions": 3,
+  "llm": {
+    "provider": "internal-testing",
+    "model": "glm-5.1",
+    "maxRetryDelayMs": 32000,
+    "thinkingBudgets": {
+      "low": 1024,
+      "medium": 4096,
+      "high": 8192,
+      "xhigh": 16384
+    }
   }
 }
