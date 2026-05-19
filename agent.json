@@ -31,15 +31,15 @@
   "max_concurrent_sessions": 3,
   "llm": {
     "provider": "internal-testing",
-    "model": "deepseek-v4-pro",
+    "providerId": "provider-internal-testing-001",
+    "model": "kimi-k2.6-code-preview",
     "maxRetryDelayMs": 32000,
     "thinkingBudgets": {
       "low": 1024,
       "medium": 4096,
       "high": 8192,
       "xhigh": 16384
-    },
-    "providerId": "provider-internal-testing-001"
+    }
   },
   "env": {
     "enabled": true,
