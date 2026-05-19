@@ -31,13 +31,20 @@
   "max_concurrent_sessions": 3,
   "llm": {
     "provider": "internal-testing",
-    "model": "glm-5.1",
+    "model": "deepseek-v4-pro",
     "maxRetryDelayMs": 32000,
     "thinkingBudgets": {
       "low": 1024,
       "medium": 4096,
       "high": 8192,
       "xhigh": 16384
-    }
+    },
+    "providerId": "provider-internal-testing-001"
+  },
+  "env": {
+    "enabled": true,
+    "includeWeekday": true,
+    "includeLocalTime": true,
+    "includeSessionStart": true
   }
 }
