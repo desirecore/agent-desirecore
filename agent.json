@@ -30,9 +30,6 @@
   "accepts_messages": true,
   "max_concurrent_sessions": 3,
   "llm": {
-    "provider": "internal-testing",
-    "providerId": "provider-internal-testing-001",
-    "model": "glm-5.1",
     "maxRetryDelayMs": 32000,
     "thinkingBudgets": {
       "low": 1024,
