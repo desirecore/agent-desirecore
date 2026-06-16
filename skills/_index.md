@@ -14,6 +14,7 @@
 | 技能 ID | 描述 | 风险 |
 |---------|------|------|
 | [task-management](./task-management/SKILL.md) | 任务创建、分配、跟踪与多 Agent 编排 | low |
+| [app-install-manager](./app-install-manager/SKILL.md) | 应用与服务目录的 docker-app 安装/卸载/启停 + 安装状态回写 | high |
 
 ## 技能协作关系
 
