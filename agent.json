@@ -33,7 +33,7 @@
   "llm": {
     "provider": "desirecore-cloud",
     "providerId": "desirecore-cloud",
-    "model": "qwen3.7-max",
+    "model": "qwen3.7-plus",
     "maxRetryDelayMs": 32000
   },
   "env": {
