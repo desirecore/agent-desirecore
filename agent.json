@@ -31,21 +31,18 @@
   "accepts_messages": true,
   "max_concurrent_sessions": 3,
   "llm": {
-    "maxRetryDelayMs": 32000,
-    "thinkingBudgets": {
-      "low": 1024,
-      "medium": 4096,
-      "high": 8192,
-      "xhigh": 16384
-    },
     "provider": "desirecore-cloud",
-    "model": "mimo-v2.5-pro",
-    "providerId": "desirecore-cloud"
+    "providerId": "desirecore-cloud",
+    "model": "qwen3.7-max",
+    "maxRetryDelayMs": 32000
   },
   "env": {
     "enabled": true,
     "includeWeekday": true,
     "includeLocalTime": true,
-    "includeSessionStart": true
+    "includeSessionStart": true,
+    "includeOs": true,
+    "includeRuntime": true,
+    "includeManagedRuntimes": true
   }
 }
