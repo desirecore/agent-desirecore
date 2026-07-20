@@ -1,7 +1,7 @@
 ---
 name: 应用安装管理
 description: 从应用与服务目录安装/卸载/启停 docker-app 与 mcp/http-api 服务（docker-app：读 install.md → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：按 install 字段安装 → 注册到 Agent → 连接验证 → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
-version: "1.1.0"
+version: "1.2.0"
 type: procedural
 risk_level: high
 status: enabled
@@ -9,7 +9,7 @@ disable-model-invocation: true
 tags: [installation, docker, mcp, registry, app-management]
 metadata:
   author: desirecore
-  updated_at: "2026-07-19"
+  updated_at: "2026-07-20"
 ---
 
 # app-install-manager 技能
@@ -72,6 +72,31 @@ DesireCore 的安装是**委派式**的——界面只发出"请安装 {名称} 
 - 卸载或重装失败时你回写 `installed`，派生会**无缝恢复**（从未被删）；
 - `failed` 语义是"应用当前不可用"——**只有确认容器已不能用才写 `failed`**，否则一律回 `installed`。
 
+### 回写安装记录的统一方式（端点优先，404 降级）
+
+**所有「回写安装记录」都用这一方式**——不要再直接 file-write 改 `installed-entries.json`（除非端点不可用时降级）。这样 installed-entries 成为「你校验后回写的事实」，界面以它为准。
+
+**首选：PATCH 端点**（结构化 + 原子写 + 自动广播刷新前端）：
+
+```yaml
+tool: HttpRequest
+parameters:
+  url: http://127.0.0.1:<agent-service-port>/api/installed-entries/<entryId>/<deviceId>
+  method: PATCH
+  body:
+    status: installed        # 六枚举之一
+    # version: "<新版本>"    # 可选，重装升级时更新版本号
+```
+
+- `200` → 回写成功，前端自动刷新，**无需**再手动改文件。
+- `400` → status 非法枚举，检查取值。
+- `404 entry_not_found` → 该条中间态记录不存在（界面未写/已被清理）。**不要**重试或伪造记录；跳过并一句话提示用户重发指令即可。
+- **连接失败 / 路由 404（旧客户端无此端点）** → **降级 file-write**（见下）。
+
+**降级 file-write**（仅端点不可用时）：读 `installed-entries.json` → 按 `entryId`+`deviceId` 定位那条中间态记录 → **只改 `status`（保留 `installedAt` 等其余所有字段与其它条目）** → 写回整个文件（界面也写此文件，勿覆盖丢失）。
+
+下文各流程的「回写安装记录」一律指这套统一方式，只标注目标 `status`。
+
 ### docker-app 安装流程
 
 1. **解析意图**：从指令提取 `action`（install/uninstall/start/stop/restart）、名称 → 映射到 `entryId`（查 registry entries 目录名 / manifest.id）、`type`（manifest.type），以及目标设备（缺省=本机）。若 `type` 为 `mcp`/`http-api`，改走下方"mcp / http-api 服务安装流程"。
@@ -81,20 +106,19 @@ DesireCore 的安装是**委派式**的——界面只发出"请安装 {名称} 
 5. **执行**（`bash`，严格按 install.md）：
    - docker-compose 类：在应用工作目录 `docker compose up -d`；docker 类：`docker run ...`。
    - 失败立即捕获输出，进入"失败处理"。
-6. **健康校验**：按 install.md 的验证地址或 manifest.exposes 的 `http://localhost:<port><path>`，`bash` 用 `curl` 轮询（最多 ~2 分钟）确认服务可达。
-7. **回写安装记录**（**本技能的核心职责**）：
-   - 读 `installed-entries.json` → 按 `entryId`+`deviceId` 定位那条中间态记录（`installing` 或 `reinstalling`）→ 按上方"状态语义表"改 `status`（首装成功→`installed`/失败→`failed`；重装失败但旧版本仍在运行→仍回 `installed`）→ 写回整个文件。
-   - **read-modify-write，只改目标条目的 status，保留其余所有字段与其它条目**（界面也会写此文件，勿覆盖丢失）。
-   - 成功后无需手动派生服务——后端文件 watcher 会在检测到 `installed` 后自动派生；重装期间派生始终保留。
+6. **健康校验（先校验后回写，强制）**：按 install.md 的验证地址或 manifest.exposes 的 `http://localhost:<port><path>`，`bash` 用 `curl` 轮询（最多 ~2 分钟）确认服务可达。**只有这步通过才算安装成功**——不要仅凭 `docker compose up -d` 无报错就回写 `installed`。
+7. **回写安装记录**（**本技能的核心职责**，按上方「回写安装记录的统一方式」）：
+   - 健康校验通过 → PATCH `status: installed`；未通过/失败 → `status: failed`；重装失败但旧版本仍在运行 → 回 `installed`（见状态语义表）。
+   - 成功后无需手动派生服务——后端文件 watcher 检测到 `installed` 后自动派生；重装期间派生始终保留。
 8. **回报用户**：一句话总结结果 + 访问地址（成功）或失败原因 + 排查建议（失败）。
 
 ### docker-app 卸载流程
 
 1. 确认（高风险）。此时界面已把记录置 `uninstalling`（派生仍保留）。
 2. `bash`：进应用工作目录 `docker compose down -v`（或 `docker rm -f <容器>`），按需清理卷/镜像。
-3. 回写安装记录：
-   - **成功**→`status` 改为 `uninstalled`（或移除该条目）。后端 watcher 据此清理派生服务与 per-service Skill。
-   - **失败**（容器未能停止/删除，应用仍在运行）→回写 `status` 为 **`installed`**，向用户说明卸载失败原因。**切勿**留在 `uninstalling`（界面卸载按钮会禁用，用户被卡住直至 stale 超时）。
+3. 回写安装记录（按「回写安装记录的统一方式」）：
+   - **成功**（容器确已停止/删除）→ PATCH `status: uninstalled`。后端 watcher 据此清理派生服务与 per-service Skill。
+   - **失败**（容器未能停止/删除，应用仍在运行）→ PATCH `status: installed`，向用户说明卸载失败原因。**切勿**留在 `uninstalling`（界面卸载按钮会禁用，用户被卡住直至 stale 超时）。
 4. 回报用户。
 
 ### mcp / http-api 服务安装流程
@@ -125,11 +149,11 @@ DesireCore 的安装是**委派式**的——界面只发出"请安装 {名称} 
        config: <manifest.connection 原样>
    ```
    端点锁内 read-modify-write 写入 agent.json 的 `mcp_servers`——**勿手工编辑 agent.json**（绕锁会丢并发更新）。
-5. **验证**：看第 3 步返回的 `connectionTest.success`，或单独 `POST /api/mcp/test-connection`（body `{connection}`）确认工具可列出。
-6. **回写安装记录**：按 `entryId`+`deviceId` 定位中间态记录 → 成功改 `installed`、失败改 `failed`（重装失败但旧配置仍可用→回 `installed`）。read-modify-write 只改 status。
-7. **回报用户**：总结安装结果 + 发现的工具数（成功）或失败命令输出摘要（失败）。
+5. **连接校验（先校验后回写，强制）**：看第 3 步返回的 `connectionTest.success`，或单独 `POST /api/mcp/test-connection`（body `{connection}`）确认能连通、能列出工具。**只有校验通过才算安装成功**——不要仅凭 postInstall 命令退出码 0 就回写 `installed`（装了包不等于连得上）。
+6. **回写安装记录**（按「回写安装记录的统一方式」）：连接校验通过 → PATCH `status: installed`；校验失败 → `status: failed`（重装失败但旧配置仍可用 → 回 `installed`）。
+7. **回报用户**：总结安装结果 + 发现的工具数（成功）或失败原因摘要（失败）。
 
-**http-api 服务**（manifest.type=`http-api`，无 `install` 字段、界面也无自动化安装动作）：仅需按"状态语义表"维护安装记录回写（`installing`→`installed`、`uninstalling`→`uninstalled`/失败回 `installed`），明确告知用户该类服务无本地部署步骤、只是登记可达性。
+**http-api 服务**（manifest.type=`http-api`，无 `install` 字段、界面也无自动化安装动作）：按「回写安装记录的统一方式」维护回写（`installing`→`installed`、`uninstalling`→`uninstalled`/失败回 `installed`），明确告知用户该类服务无本地部署步骤、只是登记可达性。
 
 ### mcp / http-api 服务卸载流程
 
@@ -143,7 +167,7 @@ DesireCore 的安装是**委派式**的——界面只发出"请安装 {名称} 
    ```
    端点幂等（`serverId` 不存在也返回成功）。如安装时全局装了包，按需 `bash` 卸载（可选，多为无害保留）。http-api 服务无需执行动作，直接进第 3 步。
    - **旧客户端降级**：该 DELETE 端点是较新客户端才有的能力。若返回 **404 / Not Found / 路由不存在**，说明当前客户端版本尚未包含 mcp 卸载端点——**不要**当作卸载成功。此时回写安装记录为 `installed`（保持"仍在用"），并一句话告知用户"当前客户端版本不支持 mcp 服务卸载，请升级客户端后重试"。切勿手工编辑 agent.json 绕过（绕锁会丢并发更新）。
-3. **回写安装记录**：成功→`uninstalled`（或移除条目）；**失败（含端点 404 降级）→回写 `installed`** 并说明原因（勿留在 `uninstalling`）。
+3. **回写安装记录**（按「回写安装记录的统一方式」）：成功 → PATCH `status: uninstalled`；**失败（含 DELETE mcp-servers 端点 404 降级）→ PATCH `status: installed`** 并说明原因（勿留在 `uninstalling`）。
 4. 回报用户。
 
 ### 启动 / 停止 / 重启
@@ -167,12 +191,14 @@ DesireCore 的安装是**委派式**的——界面只发出"请安装 {名称} 
 
 - 只装 registry 目录中存在的应用/服务；找不到 entryId 就明确告知，不要臆造安装命令。
 - 所有破坏性 docker 操作与 Agent 配置写入前必须有用户确认（risk_level: high）。
-- 写 installed-entries.json 必须保结构合法（status 仅限六枚举值：`installing`/`reinstalling`/`installed`/`uninstalling`/`failed`/`uninstalled`），否则界面加载会过滤掉脏条目。
+- 回写状态优先用 PATCH 端点（自带 status 枚举校验与原子写）；仅端点不可用时降级 file-write，此时须自行保证结构合法（status 仅限六枚举值），否则界面加载会过滤掉脏条目。
+- **先校验后回写**：docker-app 必须健康校验通过、mcp 必须连接校验通过，才回写 `installed`——installed-entries 是「你校验过的事实」，不是「执行过命令」。
 - **中间态是过渡态，你必须回写终态或（卸载/重装失败时）回 `installed`**——绝不把记录停在 `installing`/`reinstalling`/`uninstalling`，否则界面对应操作按钮会禁用、用户被卡住。
 
 ## 与其他技能/系统的协作
 
 - **后端 installed-entries watcher**：消费你回写的 status，只在 `installed` 派生 docker-app 服务、中间态保留派生、终态清理，无需你手动调派生接口。
+- **installed-entries 回写端点**：`PATCH /api/installed-entries/:entryId/:deviceId`（结构化回写状态，原子写 + 自动广播刷新前端；旧客户端 404 时降级 file-write）。
 - **agent-service mcp API**：`POST /api/mcp/install`（执行 postInstall + 连接测试）、`POST /api/agents/desirecore/mcp-servers`（注册）、`DELETE /api/agents/desirecore/mcp-servers/:serverId`（卸载）、`POST /api/mcp/test-connection`（验证）。
 - **task-management**：长安装可登记为任务跟踪进度。
 - **service-health**：派生出的服务由后端周期探活，你无需自行维护其健康。
