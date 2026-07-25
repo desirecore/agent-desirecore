@@ -34,7 +34,8 @@
     "provider": "desirecore-cloud",
     "providerId": "desirecore-cloud",
     "model": "qwen3.8-max-preview",
-    "maxRetryDelayMs": 32000
+    "maxRetryDelayMs": 32000,
+    "reasoning": "xhigh"
   },
   "env": {
     "enabled": true,
