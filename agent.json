@@ -33,9 +33,9 @@
   "llm": {
     "provider": "desirecore-cloud",
     "providerId": "desirecore-cloud",
-    "model": "qwen3.8-max-preview",
-    "maxRetryDelayMs": 32000,
-    "reasoning": "xhigh"
+    "model": "mimo-v2.5-pro",
+    "reasoning": "xhigh",
+    "maxRetryDelayMs": 32000
   },
   "env": {
     "enabled": true,
