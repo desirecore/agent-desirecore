@@ -1,6 +1,6 @@
 # 技能索引 — DesireCore
 
-> create-agent、update-agent、delete-agent、discover-agent 已迁移至全局技能层（`~/.desirecore/skills/`），
+> create-agent、update-agent、delete-agent、discover-agent 已迁移至全局技能层（`<根目录>/skills/`），
 > 由 `syncBuiltinSkills()` 捆绑源自动同步，不再随 Agent 仓库分发。
 
 ## 元技能（Meta-Skills）
@@ -27,7 +27,7 @@
 │  └─────────────┘  └──────────────────┘       │
 └──────────────────────────────────────────────┘
 
-            全局技能（~/.desirecore/skills/）
+            全局技能（<根目录>/skills/）
 ┌──────────────────────────────────────────────┐
 │  ┌─────────────┐  ┌─────────────┐            │
 │  │ create-agent │  │ delete-agent │            │

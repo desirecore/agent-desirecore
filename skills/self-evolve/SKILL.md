@@ -84,10 +84,14 @@ self-evolve 是一个**元技能（Meta-Skill）**，赋予 Agent 自我学习�
 
 ### 进化类型与目标（AgentFS v2 扁平结构）
 
+> **路径里的 `<根目录>` 一律指你的 AgentFS 根**：生产为 `~/.desirecore`，开发隔离为
+> `~/.desirecore-dev` 或启动时通过 `DESIRECORE_HOME` 指定的目录 —— **以自我感知里的实际根目录
+> 为准，不要照抄字面量**。写死 `~/.desirecore` 会让开发/测试实例把记忆写进生产数据目录。
+
 | 进化类型 | 目标域 | 示例 |
 |---------|-------|------|
-| **用户偏好** | `~/.desirecore/users/<id>/profile.md` | 用户喜欢简洁回答 |
-| **关系记忆** | `~/.desirecore/users/<id>/agents/<agent_id>/memory/` | 用户的项目背景 |
+| **用户偏好** | `<根目录>/users/<id>/profile.md` | 用户喜欢简洁回答 |
+| **关系记忆** | `<根目录>/users/<id>/agents/<agent_id>/memory/` | 用户的项目背景 |
 | **行为规则** | `principles.md` | 新的行为准则 |
 | **技能优化** | `skills/` | 技能执行改进 |
 | **知识积累** | `memory/` | 领域知识条目 |
@@ -109,7 +113,7 @@ self-evolve 是一个**元技能（Meta-Skill）**，赋予 Agent 自我学习�
 - `persona.md` L0 section → **block**（核心身份不可被对话改变）
 - `principles.md` "绝不做" section → **block**（安全红线必须由人类显式修改）
 - `agent.json` access_control / privacy → **owner_only**（权限变更需 owner 审批）
-- `~/.desirecore/users/*/privacy.md` → **owner_only**（隐私设置需用户本人修改）
+- `<根目录>/users/*/privacy.md` → **owner_only**（隐私设置需用户本人修改）
 
 ### 进化流程详解
 
@@ -171,7 +175,7 @@ teaching_intent:
 
 2. **生成 Diff**：
 ```diff
-# ~/.desirecore/users/<user_id>/profile.md
+# <根目录>/users/<user_id>/profile.md
 
 ## 沟通偏好
 
@@ -192,7 +196,7 @@ teaching_intent:
 
 4. **确认后写入**：
 ```bash
-git add ~/.desirecore/users/<user_id>/profile.md
+git add <根目录>/users/<user_id>/profile.md
 git commit -m "learn(preference): 用户偏好表格展示对比信息
 
 - 更新用户沟通偏好
@@ -251,7 +255,7 @@ impact_analysis:
 
 ┌─────────────────────────────────────────────────────┐
 │ 1. [用户偏好] 你喜欢简洁的回答                        │
-│    风险：低 | 目标：~/.desirecore/users/xxx/profile.md│
+│    风险：低 | 目标：<根目录>/users/xxx/profile.md│
 ├─────────────────────────────────────────────────────┤
 │ 2. [行为规则] 讨论预算时先确认货币单位                 │
 │    风险：中 | 目标：principles.md                     │
@@ -267,7 +271,7 @@ impact_analysis:
 ### 进化回执
 
 ```yaml
-# ~/.desirecore/runs/<run_id>/receipts/evolution-<timestamp>.yaml
+# <根目录>/runs/<run_id>/receipts/evolution-<timestamp>.yaml
 receipt:
   type: self-evolution
   timestamp: "2024-01-15T18:00:00Z"
@@ -282,7 +286,7 @@ receipt:
   learning_items:
     - type: user_preference
       content: "用户喜欢简洁回答"
-      target: "~/.desirecore/users/xxx/profile.md"
+      target: "<根目录>/users/xxx/profile.md"
       risk_level: low
       status: applied
       git_commit: "abc123"
