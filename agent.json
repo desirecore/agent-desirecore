@@ -31,6 +31,7 @@
   "accepts_messages": true,
   "max_concurrent_sessions": 3,
   "llm": {
+    "routingMode": "fixed",
     "provider": "desirecore-cloud",
     "providerId": "desirecore-cloud",
     "model": "MiniMax-M3",
