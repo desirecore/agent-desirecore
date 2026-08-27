@@ -34,7 +34,7 @@
     "routingMode": "fixed",
     "provider": "desirecore-cloud",
     "providerId": "desirecore-cloud",
-    "model": "MiniMax-M3",
+    "model": "qwen3.8-max",
     "reasoning": "xhigh",
     "maxRetryDelayMs": 32000
   },
