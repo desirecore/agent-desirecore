@@ -17,6 +17,18 @@ The screenshot viewer supports:
 
 Each newly opened image starts in fit mode. Closing and reopening the viewer does not retain stale zoom or pan state.
 
+## Human + Agent scenario decision trees
+
+Every scenario derives a structured decision tree from its Scenario Pack, accepted Run, and independent validation receipts. The tree shows:
+
+- the business facts, hard rules, and objective priorities confirmed by a human;
+- Agent clarification, modeling, and compatible-engine solve or diagnosis steps;
+- independent recomputation of variable domains, constraints, objectives, and evidence;
+- fail-closed branches for missing facts, incomplete rule mapping, or failed verification;
+- the observed delivery, conflict diagnosis, rejection, or recovery outcome.
+
+Tree data follows [`decision-tree.schema.json`](./decision-tree.schema.json) and binds the Scenario Pack, messages, session, governed tool receipts, result payload, OptimizationSpec, and validation-report hashes. The observed path comes only from settled summaries and receipts in the accepted Run; oracle data is used only to detect expectation drift. Optimization, validation-only, and recovery scenarios use different topologies, so the report never invents modeling or solve steps that did not occur. The page can switch between all branches and the observed path, and can download an SVG snapshot of the current scenario. UI code remains a generic renderer and contains no scenario-specific business tree.
+
 ## Build
 
 The build consumes an evidence directory with `scenario-packs/`, `evidence/`, and `report-web/dist/` output. Rendering dependencies are resolved from a DesireCore application checkout.

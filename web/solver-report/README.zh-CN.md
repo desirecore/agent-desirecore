@@ -17,6 +17,18 @@
 
 每次打开新图片都从“适应窗口”开始；关闭后重新打开不会保留旧的缩放或平移状态。
 
+## 人 + Agent 场景决策树
+
+每个场景都会从 Scenario Pack、真实 Run 和独立验证回执派生一棵结构化决策树，展示：
+
+- 人类确认业务事实、硬规则和目标优先级；
+- Agent 补问、建模以及调用兼容引擎求解或诊断；
+- 独立验证者重新检查变量域、约束、目标和证据；
+- 信息不足、规则未映射或校核失败时的 fail-closed 阻断分支；
+- 实际运行最终到达的交付、冲突诊断、拒绝或恢复结果。
+
+树数据遵循 [`decision-tree.schema.json`](./decision-tree.schema.json)，并绑定 Scenario Pack、消息、session、工具回执、结果 payload、OptimizationSpec 和验证报告哈希。实际路径只由已接受 Run 中的 settled summary 与受治理回执决定，oracle 仅用于发现预期不一致；求解、仅验证和恢复场景使用不同拓扑，不为未发生的建模或求解步骤造假。页面可切换“完整分支/实际路径”，也可下载当前场景的 SVG 快照；视图代码只负责通用渲染，不包含具体场景业务树。
+
 ## 构建
 
 构建输入目录需要包含 `scenario-packs/`、`evidence/`，产物默认写到 `report-web/dist/`。Markdown、公式和图片处理依赖从 DesireCore 应用 checkout 解析。
