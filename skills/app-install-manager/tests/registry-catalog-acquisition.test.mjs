@@ -330,6 +330,25 @@ test('Service operation remains optional for resolver compatibility', () => {
   assert.equal(parsed.request.operation, undefined)
 })
 
+test('Service 200 response without install or connection fails closed before execution', () => {
+  const expected = { ...request(), kind: 'service' }
+  const baseData = {
+    kind: 'service',
+    sourceId: expected.sourceId,
+    entryId: expected.entryId,
+    snapshot: expected.snapshot,
+    manifest: { id: expected.entryId, type: 'mcp' },
+  }
+  assert.throws(() => evaluateRegistryCatalogResolverResult(expected, 200, {
+    success: true,
+    data: { ...baseData, connection: { transport: 'stdio', command: 'npx' } },
+  }), /resolver_response_invalid/)
+  assert.throws(() => evaluateRegistryCatalogResolverResult(expected, 200, {
+    success: true,
+    data: { ...baseData, install: { method: 'npx', packageName: '@example/server' } },
+  }), /resolver_response_invalid/)
+})
+
 test('MCP runtimeServerId is persisted only inside the validated installed-entry receipt', () => {
   const expected = request()
   assert.deepEqual(buildInstalledCatalogReceipt({

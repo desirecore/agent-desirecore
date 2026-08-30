@@ -367,6 +367,9 @@ function validateSuccessData(expected, body) {
   if (data.manifest.type !== 'mcp' && data.manifest.type !== 'http-api') {
     fail('registry_catalog_resolver_manifest_kind_mismatch')
   }
+  if (!isRecord(data.install) || !isRecord(data.connection)) {
+    fail('registry_catalog_resolver_response_invalid')
+  }
   return {
     allowed: true,
     kind: expected.kind,
@@ -374,8 +377,8 @@ function validateSuccessData(expected, body) {
     entryId: expected.entryId,
     snapshot: expected.snapshot,
     manifest: data.manifest,
-    ...(data.install !== undefined ? { install: data.install } : {}),
-    ...(data.connection !== undefined ? { connection: data.connection } : {}),
+    install: data.install,
+    connection: data.connection,
     ...(data.installGuide !== undefined ? { installGuide: data.installGuide } : {}),
   }
 }
