@@ -34,7 +34,7 @@ function envelope(overrides = {}) {
       catalogSourceId: sourceId,
       catalogCommit: overrides.catalogCommit ?? commitA,
       catalogPath: 'entries/same-id',
-      releaseVersion: '1.2.3',
+      releaseVersion: overrides.releaseVersion ?? '1.2.3',
       contentRef: 'v1.2.3',
       contentSha256: 'c'.repeat(64),
     },
@@ -392,8 +392,65 @@ test('server receipt candidate is mandatory, immutable, and capped at 64 KiB', (
     sourceId: expected.sourceId,
     operationId: expected.operation.operationId,
     status: 'installed',
+    version: expected.snapshot.releaseVersion,
     catalogReceipt: candidate,
   })
+})
+
+test('reinstall atomically switches v1 to v2 while failure keeps v1 facts', () => {
+  const oldRequest = request({ releaseVersion: '1.0.0', catalogCommit: commitA })
+  const target = request({
+    action: 'reinstall',
+    releaseVersion: '2.0.0',
+    catalogCommit: commitB,
+    operationId: operationB,
+  })
+  const oldReceipt = receiptFor(oldRequest)
+  const pendingCatalogReceipt = {
+    ...target.snapshot,
+    kind: 'app',
+    entryId: target.entryId,
+  }
+  const candidate = receiptFor(target)
+  const resolved = evaluateRegistryCatalogResolverResult(target, 200, success(target))
+  assert.deepEqual(resolved.catalogReceipt, candidate)
+  assert.deepEqual(buildInstalledCatalogReceiptPatch({
+    sourceId: target.sourceId,
+    entryId: target.entryId,
+    operationId: target.operation.operationId,
+    catalogReceipt: resolved.catalogReceipt,
+  }), {
+    sourceId: target.sourceId,
+    operationId: target.operation.operationId,
+    status: 'installed',
+    version: '2.0.0',
+    catalogReceipt: candidate,
+  })
+
+  const failure = planRegistryCatalogPreExecutionSettlement({
+    stage: 'human_gate',
+    locator: { sourceId: target.sourceId, entryId: target.entryId, operation: target.operation },
+    entries: [{
+      ...pendingEntry({ status: 'reinstalling', operationId: operationB }),
+      version: '1.0.0',
+      catalogReceipt: oldReceipt,
+      pendingCatalogReceipt,
+    }],
+  })
+  assert.deepEqual(failure.settlement, {
+    sourceId: target.sourceId,
+    entryId: target.entryId,
+    deviceId: target.operation.deviceId,
+    operationId: target.operation.operationId,
+    status: 'installed',
+  })
+  assert.equal(Object.hasOwn(failure.settlement, 'version'), false)
+  assert.equal(Object.hasOwn(failure.settlement, 'catalogReceipt'), false)
+  assert.equal(Object.hasOwn(failure.settlement, 'pendingCatalogReceipt'), false)
+
+  assert.throws(() => evaluateRegistryCatalogResolverResult(target, 200, success(target, {
+    catalogReceipt: { ...candidate, catalogCommit: commitA },
+  })), /receipt_identity_mismatch/)
 })
 
 test('Service keeps only resolver-returned install and connection after exact identity validation', () => {
@@ -497,6 +554,7 @@ test('MCP only completes the server receipt candidate and builds a CAS-safe PATC
     sourceId: expected.sourceId,
     operationId: expected.operation.operationId,
     status: 'installed',
+    version: expected.snapshot.releaseVersion,
     catalogReceipt: { ...candidate, runtimeServerId },
   })
   assert.throws(

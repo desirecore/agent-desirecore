@@ -144,6 +144,11 @@ snapshot 基线；install/reinstall 成功时必须原样采用 resolver 返回�
 snapshot、manifest 或 installGuide 自行构造/扩展 lifecycle。Service 注册成功后只允许在该 candidate
 上补服务端返回的 runtimeServerId。
 
+重装时主记录的 `catalogReceipt` 和 version 仍是旧的已安装事实；新目标只存在同一条记录的
+`pendingCatalogReceipt`（base snapshot，无 lifecycle/runtime）。Skill 不写 PUT，也不把 pending 当成
+最终 receipt。成功时用 resolver 的新 candidate + 新 releaseVersion 原子切换；失败/取消只用同一
+operationId PATCH `installed`，省略 receipt/version，让服务端保留旧事实并清除 pending。
+
 **状态语义表（六枚举）**——中间态由界面乐观写入、终态由你回写：
 
 | status | 谁写入 | 你的退出动作 |
@@ -230,8 +235,9 @@ parameters:
 6. **健康校验（先校验后回写，强制）**：按 installGuide 的验证地址或 manifest.exposes 的 `http://localhost:<port><path>`，`bash` 用 `curl` 轮询（最多 ~2 分钟）确认服务可达。**只有这步通过才算安装成功**——不要仅凭 `docker compose up -d` 无报错就回写 `installed`。
 7. **回写安装记录**（**本技能的核心职责**，按上方「回写安装记录的统一方式」）：
    - 健康校验通过 → 用 `build-receipt-patch` 把 resolver 原样 candidate 与 `status: installed` 组成
-     CAS-safe PATCH，并携带 locator.operationId；不得本地重建 receipt。未通过/失败 → `status: failed`；重装失败但旧版本仍在
-     运行 → 回 `installed`（见状态语义表）。
+     CAS-safe PATCH，并携带 locator.operationId 和 candidate.releaseVersion；不得本地重建 receipt。
+     未通过/失败 → 首装 `status: failed`；重装失败但旧版本仍在运行 → 只 PATCH
+     `{sourceId,operationId,status:installed}`，不得附 receipt/version/pending（见状态语义表）。
    - 成功后无需手动派生服务——后端文件 watcher 检测到 `installed` 后自动派生；重装期间派生始终保留。
 8. **回报用户**：一句话总结结果 + 访问地址（成功）或失败原因 + 排查建议（失败）。
 
@@ -291,10 +297,11 @@ parameters:
 6. **回写安装记录**（按「回写安装记录的统一方式」）：连接校验通过后，用脚本
    `build-receipt-patch` 原样接收 resolver 的 catalogReceipt candidate，只在其上补服务端 add 返回的
    runtimeServerId，并与 locator.operationId、`status: installed` 在同一次精确 PATCH 中写回原
-   installed-entry；禁止从
+   installed-entry，PATCH version 取 candidate.releaseVersion；禁止从
    request snapshot/manifest 自建或替换 lifecycle。缺 candidate/runtimeServerId、candidate 被篡改或
    receipt CAS 回写失败时不得宣布成功，先按精确 runtimeServerId 回滚刚注册的 MCP，再按失败语义
-   结算。连接校验失败 → `failed`（重装失败但旧配置仍可用 → 回 `installed`）。
+   结算。连接校验失败 → 首装 `failed`；重装失败但旧配置仍可用 → 只带同一 operationId 恢复
+   `installed`，省略 receipt/version/pending。
 7. **回报用户**：总结安装结果 + 发现的工具数（成功）或失败原因摘要（失败）。
 
 **http-api 服务**（manifest.type=`http-api`，无 `install` 字段、界面也无自动化安装动作）：按「回写安装记录的统一方式」维护回写（`installing`→`installed`、`uninstalling`→`uninstalled`/失败回 `installed`），明确告知用户该类服务无本地部署步骤、只是登记可达性。

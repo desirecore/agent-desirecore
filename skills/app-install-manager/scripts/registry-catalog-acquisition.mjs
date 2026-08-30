@@ -426,7 +426,13 @@ export function buildInstalledCatalogReceiptPatch(input) {
         if (input.runtimeServerId !== undefined) fail('registry_catalog_receipt_runtime_server_id_forbidden')
         return candidate
       })()
-  return { sourceId, operationId, status: 'installed', catalogReceipt }
+  return {
+    sourceId,
+    operationId,
+    status: 'installed',
+    version: catalogReceipt.releaseVersion,
+    catalogReceipt,
+  }
 }
 
 /** Validate exact MCP uninstall ownership without consulting the current catalog. */
