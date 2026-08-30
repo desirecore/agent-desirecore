@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'"
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23101b35'/%3E%3Ctext x='32' y='44' text-anchor='middle' font-size='40' fill='%2358d4c7'%3EΣ%3C/text%3E%3C/svg%3E"
+    />
+    <title>通用求解器智能体团队 · 真实场景验证书</title>
+    <link rel="stylesheet" href="assets/katex.min.css" />
+    <link rel="stylesheet" href="assets/report.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#chapter">跳到当前章节</a>
+    <div id="app" class="app-shell" aria-busy="true">
+      <aside class="rail" aria-label="验证书目录">
+        <div class="brand">
+          <span class="brand-mark">Σ</span>
+          <div><strong>Solver Guild</strong><small>真实场景验证书</small></div>
+        </div>
+        <div class="rail-summary" id="rail-summary"></div>
+        <label class="search"
+          ><span>搜索章节</span><input id="chapter-search" type="search" placeholder="场景、问题族、引擎"
+        /></label>
+        <div class="filters" id="filters" aria-label="问题族筛选"></div>
+        <nav id="chapter-nav" class="chapter-nav" aria-label="场景章节"></nav>
+        <div class="rail-foot"><span id="build-id"></span><span>零埋点 · 可离线</span></div>
+      </aside>
+      <main class="main">
+        <header class="topbar">
+          <button id="menu-button" class="icon-button" aria-label="打开目录">☰</button>
+          <div class="progress">
+            <span id="progress-label">载入证据…</span>
+            <div><i id="progress-bar"></i></div>
+          </div>
+          <div class="top-actions">
+            <button id="latest-button">新版回归</button><button id="print-button">打印 / PDF</button
+            ><button id="integrity-button">完整性</button>
+          </div>
+        </header>
+        <article id="chapter" class="chapter" tabindex="-1"></article>
+        <footer class="pager">
+          <button id="prev-button">← 上一章</button><span id="pager-label"></span
+          ><button id="next-button">下一章 →</button>
+        </footer>
+      </main>
+    </div>
+    <dialog id="lightbox" class="lightbox" aria-labelledby="lightbox-title" aria-describedby="lightbox-meta">
+      <div class="lightbox-bar">
+        <div class="lightbox-heading">
+          <strong id="lightbox-title"></strong><small id="lightbox-meta"></small>
+        </div>
+        <button id="lightbox-close" aria-label="关闭原图">×</button>
+      </div>
+      <div class="lightbox-viewport">
+        <div
+          id="lightbox-stage"
+          class="lightbox-stage"
+          tabindex="0"
+          aria-label="可缩放和平移的截图预览"
+          aria-describedby="lightbox-zoom-hint"
+        >
+          <div id="lightbox-canvas" class="lightbox-canvas">
+            <img id="lightbox-image" alt="" draggable="false" />
+          </div>
+        </div>
+        <span id="lightbox-zoom-hint" class="lightbox-zoom-hint"
+          ><span class="lightbox-zoom-hint-desktop">双击放大 · Ctrl/⌘ + 滚轮缩放 · 拖动平移</span
+          ><span class="lightbox-zoom-hint-mobile">双指捏合缩放 · 单指拖动平移</span></span
+        >
+      </div>
+      <div class="lightbox-controls">
+        <button id="lightbox-prev">← 上一张</button><a id="lightbox-original" download>下载原图</a
+        ><div class="lightbox-zoom-controls" role="group" aria-label="图片缩放">
+          <button id="lightbox-zoom-out" aria-label="缩小图片">−</button
+          ><output id="lightbox-zoom" aria-live="polite">适应窗口</output
+          ><button id="lightbox-zoom-in" aria-label="放大图片">＋</button>
+        </div>
+        <button id="lightbox-fit" aria-label="让图片适应窗口">适应</button
+        ><button id="lightbox-actual" aria-label="按原始像素显示图片">1:1</button
+        ><button id="lightbox-next">下一张 →</button>
+      </div>
+    </dialog>
+    <dialog id="integrity-dialog" class="integrity-dialog">
+      <button class="dialog-close" aria-label="关闭">×</button>
+      <h2>证据完整性</h2>
+      <div id="integrity-content"></div>
+    </dialog>
+    <dialog id="latest-dialog" class="latest-dialog">
+      <button class="dialog-close" aria-label="关闭">×</button>
+      <div id="latest-content"></div>
+    </dialog>
+    <noscript
+      ><p class="noscript">
+        本验证书需要 JavaScript 载入分章证据。所有数据均包含在离线包内，不会连接第三方服务。
+      </p></noscript
+    >
+    <script src="data/manifest.js"></script>
+    <script src="assets/report.js"></script>
+  </body>
+</html>

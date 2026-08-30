@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://desirecore.dev/schemas/solver-public-release-attestation-v1.json",
+  "title": "Solver report public release attestation",
+  "description": "Binds a public-release privacy review to the exact transcript and screenshot evidence roots consumed by the report builder.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "audience", "review", "evidence", "metadata"],
+  "properties": {
+    "schemaVersion": { "const": "solver.public-release-attestation/v1", "description": "Attestation contract version." },
+    "audience": { "const": "public", "description": "Confirms that the reviewed output is approved for a public audience." },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewedAt", "reviewer", "methods", "assertions"],
+      "properties": {
+        "status": { "const": "passed", "description": "Fail-closed public privacy review result." },
+        "reviewedAt": { "type": "string", "format": "date-time", "description": "Time at which the bound evidence was reviewed." },
+        "reviewer": { "type": "string", "minLength": 1, "description": "Accountable reviewer or release process identity." },
+        "methods": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Review methods used for transcripts and screenshots." },
+        "assertions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["transcriptsContainNoSensitiveData", "screenshotsContainNoSensitiveData", "customerIdentifiersExcluded"],
+          "properties": {
+            "transcriptsContainNoSensitiveData": { "const": true, "description": "All published transcript text was reviewed for secrets and personal data." },
+            "screenshotsContainNoSensitiveData": { "const": true, "description": "Every screenshot hash in the bound root was visually reviewed for secrets and personal data." },
+            "customerIdentifiersExcluded": { "const": true, "description": "Customer names, codenames, and private identifiers are excluded." }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publicTranscriptContentRootSha256", "publicScreenshotContentRootSha256", "screenshotPlanSha256", "screenshotValidationSha256", "screenshotPrivacyValidationSha256"],
+      "properties": {
+        "publicTranscriptContentRootSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Canonical root hash of every public user and Agent message." },
+        "publicScreenshotContentRootSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Canonical root hash binding every reviewed screenshot path, digest, and dimension." },
+        "screenshotPlanSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Canonical screenshot plan digest." },
+        "screenshotValidationSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Canonical screenshot validation digest." },
+        "screenshotPrivacyValidationSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Canonical digest of the full-resolution OCR privacy validation bound to every public screenshot." }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platformCommit", "agentSkillVersion", "representativeStabilityPasses"],
+      "properties": {
+        "platformCommit": { "type": "string", "minLength": 7, "description": "Platform commit that owns the historical evidence." },
+        "agentSkillVersion": { "type": "string", "minLength": 1, "description": "Solver Agent Skill version that produced the historical evidence." },
+        "representativeStabilityPasses": { "type": "integer", "minimum": 0, "description": "Number of representative stability passes supported by the evidence." }
+      }
+    }
+  }
+}
