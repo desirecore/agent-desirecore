@@ -67,7 +67,7 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
    不允许回看旧消息或从显示名、同 ID 本地条目、自然语言补字段。若 locator 已解析但完整解析
    失败，先按“执行前停止的强制结算”处理；真正缺失/JSON 畸形且没有 locator 的手工指令不猜写
    安装账本，只报告错误并停止。
-2. 对 App 三种 operation 及 Service，把解析结果的 `request` 原样作为 body 调 resolver：
+2. 对 App 三种 operation 及 Service install/reinstall，把解析结果的 `request` 原样作为 body 调 resolver：
 
    ```yaml
    tool: HttpRequest
@@ -81,6 +81,8 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
    installed-entry 的不可变 lifecycle receipt，并用 receipt 对应的 Git object 返回旧版本定义。它不因
    当前 catalog listing-only、stale 或下架而阻断，但无 receipt、receipt/snapshot 不一致、来源或设备
    不匹配都失败关闭。
+   Service uninstall 不调用 current catalog resolver：它只按 locator 命中 exact installed receipt，随后
+   由精确 DELETE 端点使用 receipt.runtimeServerId 删除；目录删除、listing-only 或 stale 不得卡住卸载。
 3. 只有 HTTP 200 且响应通过同一脚本的 `evaluate-response` 复核后才可继续。复核
    输入是 `{ "expected": <request>, "status": <HTTP状态>, "body": <响应JSON> }`。响应的
    kind/sourceId/entryId/snapshot、manifest.id/type 必须一致，App 还必须取得非空 installGuide。
@@ -114,6 +116,7 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
   "messageId": "<消息ID>",
   "catalogReceipt": {
     "schemaVersion": 1,
+    "kind": "app | service",
     "catalogSourceId": "registry:official",
     "entryId": "dify",
     "catalogCommit": "<40/64位commit>",
@@ -261,7 +264,8 @@ parameters:
    entryId、显示名或调用方值代替。
 5. **连接校验（先校验后回写，强制）**：看第 3 步返回的 `connectionTest.success`，或单独 `POST /api/mcp/test-connection`（body `{connection}`）确认能连通、能列出工具。**只有校验通过才算安装成功**——不要仅凭 postInstall 命令退出码 0 就回写 `installed`（装了包不等于连得上）。
 6. **回写安装记录**（按「回写安装记录的统一方式」）：连接校验通过后，用脚本 `build-receipt`
-   把 request.snapshot 加 `entryId` 与服务端返回的 `runtimeServerId` 组成 `catalogReceipt`，与
+   把 request.kind、request.snapshot 加 `entryId` 与服务端返回的 `runtimeServerId` 组成
+   `catalogReceipt`，与
    `status: installed` 在同一次
    精确 PATCH 中写回原 installed-entry；这仍是唯一安装账本。缺 runtimeServerId 或 receipt 回写失败
    时不得宣布成功，先按精确 runtimeServerId 回滚刚注册的 MCP，再按失败语义结算。连接校验失败
@@ -272,8 +276,11 @@ parameters:
 
 ### mcp / http-api 服务卸载流程
 
-1. 先**解析机器消息并调用 resolver**；失败则不执行包管理、配置写入或 `bash`。成功后确认
-   （高风险）。界面已置 `uninstalling`。
+1. 完整解析机器消息，但不调用 current catalog resolver。用脚本 `resolve-service-uninstall` 对 locator、
+   request.snapshot 和 `GET /api/installed-entries` 结果做完整复核：必须精确命中
+   sourceId+entryId+deviceId 的唯一 `uninstalling` 记录，receipt.kind 必须为 service，且
+   catalogReceipt.runtimeServerId 与 snapshot 必须有效。无 receipt/kind/runtimeServerId、身份/快照不符、
+   零条或多条都先结算回 `installed` 并停止。随后做高风险确认，取消同样结算回 `installed`。
 2. **执行卸载**（mcp）：从 Agent 移除 MCP server 配置：
    ```yaml
    tool: HttpRequest
@@ -281,7 +288,8 @@ parameters:
      url: http://127.0.0.1:<agent-service-port>/api/agents/desirecore/mcp-servers/<entryId>?sourceId=<sourceId>&deviceId=<deviceId>
      method: DELETE
    ```
-   服务端从精确 installed-entry receipt 的 runtimeServerId 删除对应配置；不得按裸 entryId 删除。
+   服务端从精确 installed-entry receipt 的 runtimeServerId 删除对应配置；不得按裸 entryId 删除，
+   也不得因为当前目录删除、listing-only 或 snapshot stale 改走 resolver。
    端点幂等。如安装时全局装了包，按需 `bash` 卸载（可选，多为无害保留）。http-api 服务无需执行
    动作，直接进第 3 步。
    - **旧客户端降级**：该 DELETE 端点是较新客户端才有的能力。若返回 **404 / Not Found / 路由不存在**，说明当前客户端版本尚未包含 mcp 卸载端点——**不要**当作卸载成功。此时回写安装记录为 `installed`（保持"仍在用"），并一句话告知用户"当前客户端版本不支持 mcp 服务卸载，请升级客户端后重试"。切勿手工编辑 agent.json 绕过（绕锁会丢并发更新）。

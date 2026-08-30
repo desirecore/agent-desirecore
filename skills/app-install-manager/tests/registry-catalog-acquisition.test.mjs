@@ -10,6 +10,8 @@ import {
   parseRegistryCatalogAcquisitionMessage,
   parseRegistryCatalogAcquisitionLocatorMessage,
   planRegistryCatalogPreExecutionSettlement,
+  resolveServiceUninstallOwnership,
+  registryCatalogRuntimeServerId,
 } from '../scripts/registry-catalog-acquisition.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -351,20 +353,70 @@ test('Service 200 response without install or connection fails closed before exe
 
 test('MCP runtimeServerId is persisted only inside the validated installed-entry receipt', () => {
   const expected = request()
+  const runtimeServerId = registryCatalogRuntimeServerId(expected.sourceId, expected.entryId)
   assert.deepEqual(buildInstalledCatalogReceipt({
+    kind: 'service',
     snapshot: expected.snapshot,
     entryId: expected.entryId,
-    runtimeServerId: 'catalog.registry_source-a.same-id',
+    runtimeServerId,
   }), {
     ...expected.snapshot,
+    kind: 'service',
     entryId: expected.entryId,
-    runtimeServerId: 'catalog.registry_source-a.same-id',
+    runtimeServerId,
   })
   assert.throws(() => buildInstalledCatalogReceipt({
+    kind: 'service',
     snapshot: expected.snapshot,
     entryId: expected.entryId,
     runtimeServerId: 'bad/runtime/key',
   }), /runtime_server_id_invalid/)
+  assert.throws(() => buildInstalledCatalogReceipt({
+    kind: 'service',
+    snapshot: expected.snapshot,
+    entryId: expected.entryId,
+    runtimeServerId: 'well_formed_but_wrong',
+  }), /runtime_server_id_mismatch/)
+})
+
+test('Service uninstall authorizes only exact active service receipt and runtime key', () => {
+  const expected = request({ action: 'uninstall' })
+  const locator = {
+    sourceId: expected.sourceId,
+    entryId: expected.entryId,
+    operation: expected.operation,
+  }
+  const receipt = buildInstalledCatalogReceipt({
+    kind: 'service',
+    snapshot: expected.snapshot,
+    entryId: expected.entryId,
+    runtimeServerId: registryCatalogRuntimeServerId(expected.sourceId, expected.entryId),
+  })
+  const entry = { ...pendingEntry({ status: 'uninstalling' }), catalogReceipt: receipt }
+  assert.deepEqual(resolveServiceUninstallOwnership({ locator, snapshot: expected.snapshot, entries: [entry] }), {
+    allowed: true,
+    deleteAllowed: true,
+    sourceId: expected.sourceId,
+    entryId: expected.entryId,
+    deviceId: expected.operation.deviceId,
+    runtimeServerId: registryCatalogRuntimeServerId(expected.sourceId, expected.entryId),
+  })
+  for (const invalidReceipt of [
+    { ...receipt, kind: undefined },
+    { ...receipt, kind: 'app' },
+    { ...receipt, runtimeServerId: undefined },
+  ]) {
+    assert.equal(resolveServiceUninstallOwnership({
+      locator,
+      snapshot: expected.snapshot,
+      entries: [{ ...entry, catalogReceipt: invalidReceipt }],
+    }).deleteAllowed, false)
+  }
+  assert.equal(resolveServiceUninstallOwnership({
+    locator,
+    snapshot: expected.snapshot,
+    entries: [{ ...entry, sourceId: 'registry:source-b' }],
+  }).deleteAllowed, false)
 })
 
 test('Skill contract has no fixed official/local Registry fallback and resolves before execution', async () => {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { pathToFileURL } from 'node:url'
+import { createHash } from 'node:crypto'
 
 const MACHINE_LINE_PREFIX = 'RegistryCatalogAcquisition='
 const IMMUTABLE_COMMIT = /^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/
@@ -215,6 +216,12 @@ function snapshotsEqual(left, right) {
     left.contentSha256 === right.contentSha256
 }
 
+export function registryCatalogRuntimeServerId(sourceId, entryId) {
+  const digest = createHash('sha256').update(`${sourceId}\0${entryId}`).digest('hex').slice(0, 20)
+  const slug = entryId.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 48) || 'entry'
+  return `registry_${digest}_${slug}`
+}
+
 function boundedReasons(value) {
   if (!Array.isArray(value) || value.length > 32) return undefined
   const reasons = value.filter(
@@ -300,9 +307,10 @@ export function planRegistryCatalogPreExecutionSettlement(input) {
 
 /** Build the only receipt shape accepted by installed-entries; it remains in that single ledger. */
 export function buildInstalledCatalogReceipt(input) {
-  if (!isRecord(input) || !hasOnlyKeys(input, ['snapshot', 'entryId'], ['runtimeServerId'])) {
+  if (!isRecord(input) || !hasOnlyKeys(input, ['kind', 'snapshot', 'entryId'], ['runtimeServerId'])) {
     fail('registry_catalog_receipt_input_invalid')
   }
+  if (input.kind !== 'app' && input.kind !== 'service') fail('registry_catalog_receipt_kind_invalid')
   const snapshot = validateSnapshot(input.snapshot)
   const entryId = requireBoundedString(input.entryId, 'receipt_entry_id', 240)
   if (!SAFE_ENTRY_ID.test(entryId)) fail('registry_catalog_receipt_entry_id_invalid')
@@ -312,11 +320,97 @@ export function buildInstalledCatalogReceipt(input) {
     if (!/^[a-zA-Z0-9._-]+$/.test(runtimeServerId)) {
       fail('registry_catalog_receipt_runtime_server_id_invalid')
     }
+    const expectedComposite = registryCatalogRuntimeServerId(snapshot.catalogSourceId, entryId)
+    if (
+      input.kind !== 'service' ||
+      (runtimeServerId !== expectedComposite &&
+        !(snapshot.catalogSourceId === 'registry:official' && runtimeServerId === entryId))
+    ) {
+      fail('registry_catalog_receipt_runtime_server_id_mismatch')
+    }
   }
   return {
     ...snapshot,
+    kind: input.kind,
     entryId,
     ...(runtimeServerId ? { runtimeServerId } : {}),
+  }
+}
+
+/** Validate exact MCP uninstall ownership without consulting the current catalog. */
+export function resolveServiceUninstallOwnership(input) {
+  if (!isRecord(input) || !hasOnlyKeys(input, ['locator', 'snapshot', 'entries'])) {
+    fail('registry_catalog_service_uninstall_input_invalid')
+  }
+  if (!isRecord(input.locator) || !hasOnlyKeys(input.locator, ['sourceId', 'entryId', 'operation'])) {
+    fail('registry_catalog_service_uninstall_locator_invalid')
+  }
+  const sourceId = requireBoundedString(input.locator.sourceId, 'service_uninstall_source_id', 160)
+  const entryId = requireBoundedString(input.locator.entryId, 'service_uninstall_entry_id', 240)
+  if (!SAFE_SOURCE_ID.test(sourceId) || !SAFE_ENTRY_ID.test(entryId)) {
+    fail('registry_catalog_service_uninstall_locator_invalid')
+  }
+  const operation = validateOperation(input.locator.operation)
+  if (operation.action !== 'uninstall') fail('registry_catalog_service_uninstall_operation_invalid')
+  const snapshot = validateSnapshot(input.snapshot)
+  if (!Array.isArray(input.entries)) fail('registry_catalog_service_uninstall_entries_invalid')
+  const matches = input.entries.filter((entry) =>
+    isRecord(entry) &&
+    entry.sourceId === sourceId &&
+    entry.entryId === entryId &&
+    entry.deviceId === operation.deviceId &&
+    entry.status === 'uninstalling'
+  )
+  if (matches.length !== 1) {
+    return {
+      allowed: false,
+      deleteAllowed: false,
+      reason: matches.length === 0
+        ? 'registry_catalog_pending_intent_not_found'
+        : 'registry_catalog_pending_intent_ambiguous',
+    }
+  }
+  const receipt = matches[0].catalogReceipt
+  if (!isRecord(receipt) || receipt.kind !== 'service' || receipt.entryId !== entryId) {
+    return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_receipt_missing' }
+  }
+  const runtimeServerId = typeof receipt.runtimeServerId === 'string' ? receipt.runtimeServerId : ''
+  if (
+    runtimeServerId.length === 0 ||
+    runtimeServerId.length > 100 ||
+    !/^[a-zA-Z0-9._-]+$/.test(runtimeServerId)
+  ) {
+    return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_receipt_missing' }
+  }
+  const expectedComposite = registryCatalogRuntimeServerId(sourceId, entryId)
+  if (
+    runtimeServerId !== expectedComposite &&
+    !(sourceId === 'registry:official' && runtimeServerId === entryId)
+  ) {
+    return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_ownership_mismatch' }
+  }
+  let receiptSnapshot
+  try {
+    const {
+      kind: _kind,
+      entryId: _entryId,
+      runtimeServerId: _runtimeServerId,
+      ...snapshotValue
+    } = receipt
+    receiptSnapshot = validateSnapshot(snapshotValue)
+  } catch {
+    return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_ownership_mismatch' }
+  }
+  if (receiptSnapshot.catalogSourceId !== sourceId || !snapshotsEqual(receiptSnapshot, snapshot)) {
+    return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_ownership_mismatch' }
+  }
+  return {
+    allowed: true,
+    deleteAllowed: true,
+    sourceId,
+    entryId,
+    deviceId: operation.deviceId,
+    runtimeServerId,
   }
 }
 
@@ -455,7 +549,12 @@ async function main() {
     process.stdout.write(`${JSON.stringify(buildInstalledCatalogReceipt(input))}\n`)
     return
   }
-  fail('usage: registry-catalog-acquisition.mjs parse-locator|parse-message|evaluate-response|plan-settlement|build-receipt')
+  if (command === 'resolve-service-uninstall') {
+    const input = JSON.parse(await readStdin())
+    process.stdout.write(`${JSON.stringify(resolveServiceUninstallOwnership(input))}\n`)
+    return
+  }
+  fail('usage: registry-catalog-acquisition.mjs parse-locator|parse-message|evaluate-response|plan-settlement|build-receipt|resolve-service-uninstall')
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
