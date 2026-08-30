@@ -1,7 +1,7 @@
 ---
 name: 应用安装管理
-description: 从应用与服务目录安装/卸载/启停 docker-app 与 mcp/http-api 服务（docker-app：读 install.md → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：按 install 字段安装 → 注册到 Agent → 连接验证 → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
-version: "1.2.0"
+description: 经当前目录快照 resolver 授权后安装/卸载/启停 docker-app 与 mcp/http-api 服务（docker-app：解析 manifest/installGuide → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：使用 resolver 返回的 install/connection → 注册到 Agent → 连接验证 → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
+version: "1.3.0"
 type: procedural
 risk_level: high
 status: enabled
@@ -9,7 +9,7 @@ disable-model-invocation: true
 tags: [installation, docker, mcp, registry, app-management]
 metadata:
   author: desirecore
-  updated_at: "2026-07-20"
+  updated_at: "2026-08-31"
 ---
 
 # app-install-manager 技能
@@ -35,11 +35,49 @@ DesireCore 的安装是**委派式**的——界面只发出"请安装 {名称} 
 
 ### 关键路径与数据
 
-- 应用/服务元数据：`<DesireCore根目录>/registry/official/entries/<entryId>/manifest.json`
-- 安装指南（docker-app）：`<同目录>/install.md`（含端口、docker compose 步骤、验证地址）
+- 当前目录快照解析：`POST http://127.0.0.1:<agent-service-port>/api/registry/acquisitions/resolve`
+- 机器消息解析与响应复核：`<本技能目录>/scripts/registry-catalog-acquisition.mjs`
 - 安装记录：`<DesireCore根目录>/config/installed-entries.json`
   （`<根目录>` 为你的 AgentFS 根，生产为 `~/.desirecore`，开发隔离为 `~/.desirecore-dev`，以自我感知里的实际根目录为准）
 - agent-service API：`http://127.0.0.1:<agent-service-port>`（端口见自我感知；mcp 服务安装/注册用）
+
+### 执行前协议：精确机器消息 → 当前快照 resolver（强制）
+
+任何 install/reinstall/uninstall/start/stop/restart 在环境探测、Docker 查询、包安装或其它
+`bash` 前，都必须先完成本节。自然语言只用于识别动作、设备和面向用户的显示名称，**不得**
+从自然语言猜测 `kind`、`sourceId`、`entryId`、snapshot、install 或 connection。
+
+1. 从**当前这条**生命周期指令中提取唯一一行：
+   `RegistryCatalogAcquisition=<单行 JSON>`。必须把完整当前指令交给随技能分发的解析器：
+
+   ```bash
+   node "<本技能目录>/scripts/registry-catalog-acquisition.mjs" parse-message
+   ```
+
+   通过 stdin 输入指令全文。解析器会拒绝缺失、重复、畸形机器行、额外字段、可变 commit、
+   `sourceId` 与 snapshot 不一致，以及 App 请求夹带 install/connection。解析失败立即停止；
+   不允许回看旧消息找机器行，也不允许从显示名、同 ID 本地条目或自然语言补字段。
+2. 把解析器输出的 JSON **原样**作为 body 调用：
+
+   ```yaml
+   tool: HttpRequest
+   parameters:
+     url: http://127.0.0.1:<agent-service-port>/api/registry/acquisitions/resolve
+     method: POST
+     body: <解析器输出的完整 JSON>
+   ```
+
+3. 只有 HTTP 200 且响应通过同一脚本的 `evaluate-response` 复核后才可继续。复核输入是
+   `{ "expected": <第1步请求>, "status": <HTTP状态>, "body": <响应JSON> }`。它要求响应的
+   kind/sourceId/entryId/snapshot 与请求逐项一致，manifest.id/type 一致；App 还必须取得非空
+   installGuide。复核输出 `allowed:true` 才是**本次**执行的定义快照。
+4. 400 `invalid`、404 `not_found`、409 `stale|blocked|client_upgrade_required|config_mismatch|install_guide_unavailable`，
+   以及连接失败、非 JSON、身份/快照/manifest 不一致，一律立即停止并报告明确错误。**禁止 fallback**：
+   不得读取任何本地 Registry 条目、不得改用同 ID 的其它来源、不得沿用旧响应，也不得执行
+   Docker、包管理或任意 `bash`。
+5. App 后续只能使用复核输出的 `manifest` 与 `installGuide`；忽略响应中即使出现的 install/
+   connection。Service 后续只能使用复核输出的 manifest/install/connection。resolver 是当前目录
+   快照的授权解析器，不新增安装账本，也不替代下文 Human Gate、健康校验、回滚和终态收据。
 
 安装记录条目结构（写回时必须完整保留全部字段）：
 
@@ -84,29 +122,39 @@ parameters:
   url: http://127.0.0.1:<agent-service-port>/api/installed-entries/<entryId>/<deviceId>
   method: PATCH
   body:
+    sourceId: <resolver 返回并复核通过的 sourceId>
     status: installed        # 六枚举之一
     # version: "<新版本>"    # 可选，重装升级时更新版本号
 ```
 
 - `200` → 回写成功，前端自动刷新，**无需**再手动改文件。
-- `400` → status 非法枚举，检查取值。
+- `400` → status/sourceId 非法，检查取值。
 - `404 entry_not_found` → 该条中间态记录不存在（界面未写/已被清理）。**不要**重试或伪造记录；跳过并一句话提示用户重发指令即可。
 - **连接失败 / 路由 404（旧客户端无此端点）** → **降级 file-write**（见下）。
 
-**降级 file-write**（仅端点不可用时）：读 `installed-entries.json` → 按 `entryId`+`deviceId` 定位那条中间态记录 → **只改 `status`（保留 `installedAt` 等其余所有字段与其它条目）** → 写回整个文件（界面也写此文件，勿覆盖丢失）。
+**降级 file-write**（仅终态 PATCH 端点不可用时；目录 resolver 绝无此降级）：读
+`installed-entries.json` → 按 `sourceId`+`entryId`+`deviceId` 精确定位那条中间态记录 → **只改
+`status`（保留 `installedAt` 等其余所有字段与其它条目）** → 写回整个文件（界面也写此文件，
+勿覆盖丢失）。来源缺失或存在多条候选时失败关闭，不得按同 ID 猜测。
 
 下文各流程的「回写安装记录」一律指这套统一方式，只标注目标 `status`。
 
 ### docker-app 安装流程
 
-1. **解析意图**：从指令提取 `action`（install/uninstall/start/stop/restart）、名称 → 映射到 `entryId`（查 registry entries 目录名 / manifest.id）、`type`（manifest.type），以及目标设备（缺省=本机）。若 `type` 为 `mcp`/`http-api`，改走下方"mcp / http-api 服务安装流程"。
-2. **读目录数据**：`read` manifest.json 拿到 `install.requirements`（docker/内存/磁盘/ports）与 `exposes`；`read` install.md 拿到部署步骤与验证地址。
-3. **环境校验**（`bash`）：`docker version` / `docker compose version` 确认 docker 就绪；用 manifest.ports 检查端口占用（`lsof -i :<port>` 或 `docker ps`）；磁盘空间。任一不满足→停下，向用户说明并给出修复建议，**不要**继续。
+1. **解析机器消息并调用 resolver**：严格执行“执行前协议”。从自然语言只识别 action 和目标设备；
+   `entryId`、`type`、版本、端口、exposes 和安装步骤只认复核后的服务端结果。manifest.type 不是
+   `docker-app` 时改走下方服务流程；身份或类型不一致立即停止。
+2. **读取本次授权定义**：从 resolver 返回的 manifest 读取 `install.requirements`（docker/内存/
+   磁盘/ports）与 exposes；只把 resolver 返回的 installGuide 作为部署步骤与验证地址。不得从
+   AgentFS 或其它目录补读/覆盖同 ID 定义。
+3. **环境校验**（`bash`）：`docker version` / `docker compose version` 确认 docker 就绪；用
+   `manifest.install.requirements.ports` 检查端口占用（`lsof -i :<port>` 或 `docker ps`）；检查磁盘
+   空间。任一不满足→停下，向用户说明并给出修复建议，**不要**继续。
 4. **高风险确认**：安装/卸载会改动本机容器，属高风险。执行前用一句话向用户确认（应用名 + 目标设备 + 端口）。用户取消则中止。
-5. **执行**（`bash`，严格按 install.md）：
+5. **执行**（`bash`，严格按 resolver 返回的 installGuide）：
    - docker-compose 类：在应用工作目录 `docker compose up -d`；docker 类：`docker run ...`。
    - 失败立即捕获输出，进入"失败处理"。
-6. **健康校验（先校验后回写，强制）**：按 install.md 的验证地址或 manifest.exposes 的 `http://localhost:<port><path>`，`bash` 用 `curl` 轮询（最多 ~2 分钟）确认服务可达。**只有这步通过才算安装成功**——不要仅凭 `docker compose up -d` 无报错就回写 `installed`。
+6. **健康校验（先校验后回写，强制）**：按 installGuide 的验证地址或 manifest.exposes 的 `http://localhost:<port><path>`，`bash` 用 `curl` 轮询（最多 ~2 分钟）确认服务可达。**只有这步通过才算安装成功**——不要仅凭 `docker compose up -d` 无报错就回写 `installed`。
 7. **回写安装记录**（**本技能的核心职责**，按上方「回写安装记录的统一方式」）：
    - 健康校验通过 → PATCH `status: installed`；未通过/失败 → `status: failed`；重装失败但旧版本仍在运行 → 回 `installed`（见状态语义表）。
    - 成功后无需手动派生服务——后端文件 watcher 检测到 `installed` 后自动派生；重装期间派生始终保留。
@@ -114,8 +162,11 @@ parameters:
 
 ### docker-app 卸载流程
 
-1. 确认（高风险）。此时界面已把记录置 `uninstalling`（派生仍保留）。
-2. `bash`：进应用工作目录 `docker compose down -v`（或 `docker rm -f <容器>`），按需清理卷/镜像。
+1. **解析机器消息并调用 resolver**，取得与当前 `sourceId+entryId+snapshot` 一致的 manifest 和
+   installGuide；任何失败先停止，不能执行 Docker。随后再确认（高风险）。此时界面已把记录置
+   `uninstalling`（派生仍保留）。
+2. `bash`：严格按本次 installGuide 定位应用工作目录并执行卸载（如 `docker compose down -v`），
+   按需清理卷/镜像；不得使用本地同 ID 条目的旧步骤。
 3. 回写安装记录（按「回写安装记录的统一方式」）：
    - **成功**（容器确已停止/删除）→ PATCH `status: uninstalled`。后端 watcher 据此清理派生服务与 per-service Skill。
    - **失败**（容器未能停止/删除，应用仍在运行）→ PATCH `status: installed`，向用户说明卸载失败原因。**切勿**留在 `uninstalling`（界面卸载按钮会禁用，用户被卡住直至 stale 超时）。
@@ -125,8 +176,12 @@ parameters:
 
 **mcp 服务**（manifest.type=`mcp`，条目含 `install` 与 `connection` 字段）：
 
-1. **解析意图 + 确认**：确定 `entryId`、目标设备（mcp 通常装到本机）。高风险确认。界面已乐观写 `installing`/`reinstalling`。
-2. **读条目**：`read` manifest.json 拿 `install`（`method` npx/pip/uvx/docker/binary、`packageName`、`command`、`args`、`postInstall`）与 `connection`（transport/command/args/url/headers）。
+1. **解析机器消息并调用 resolver + 确认**：严格执行“执行前协议”，以复核后的复合身份确定
+   `entryId`，从自然语言只取目标设备（mcp 通常装到本机）。resolver 失败时在任何安装命令前
+   停止；成功后再做高风险确认。界面已乐观写 `installing`/`reinstalling`。
+2. **使用本次授权定义**：只用 resolver 响应的 manifest/install/connection（`install` 含 method、
+   packageName、command、args、postInstall；`connection` 含 transport/command/args/url/headers）。
+   不读取或合并本地同 ID 条目。
 3. **执行安装**（优先走 API，逐条跑 `postInstall` 命令 + 可选连接测试）：
    ```yaml
    tool: HttpRequest
@@ -157,7 +212,8 @@ parameters:
 
 ### mcp / http-api 服务卸载流程
 
-1. 确认（高风险）。界面已置 `uninstalling`。
+1. 先**解析机器消息并调用 resolver**；失败则不执行包管理、配置写入或 `bash`。成功后确认
+   （高风险）。界面已置 `uninstalling`。
 2. **执行卸载**（mcp）：从 Agent 移除 MCP server 配置：
    ```yaml
    tool: HttpRequest
@@ -172,12 +228,18 @@ parameters:
 
 ### 启动 / 停止 / 重启
 
-收到"启动/停止/重启 {应用}"（docker-app）：定位应用工作目录，`bash` 执行 `docker compose start|stop|restart`（或 `docker start|stop|restart <容器>`），回报结果。这类运行态切换不改变安装记录的 install 状态。
+收到"启动/停止/重启 {应用}"（docker-app）：先解析机器消息、调用 resolver 并复核响应；只按
+本次 manifest/installGuide 定位应用工作目录。随后完成高风险确认，再用 `bash` 执行指南允许的
+`docker compose start|stop|restart`（或 `docker start|stop|restart <容器>`），回报结果。这类运行态
+切换不改变安装记录的 install 状态。resolver 失败时禁止探测或操作 Docker。
 
 ### 失败处理
 
 | 场景 | 处理 |
 |------|------|
+| 机器行缺失/畸形/重复 | 立即停止，说明当前指令缺少可验证目录快照；禁止从自然语言或本地目录补全 |
+| resolver 400/404/409/连接失败 | 原样报告有界错误码并停止；禁止 Docker/bash/包管理和同 ID fallback |
+| resolver 200 但身份/快照/manifest/指南不一致 | 视为不可信响应并停止，不执行任何生命周期副作用 |
 | docker 未运行 | 提示用户启动 Docker，安装记录回写 `failed` 或保留中间态并说明 |
 | 端口被占用 | 列出占用进程，建议换端口或停占用，征求用户意见 |
 | compose 启动失败 | `docker compose logs` 取错误，回写 `failed`，附日志摘要 |
@@ -189,7 +251,10 @@ parameters:
 
 ### 边界与安全
 
-- 只装 registry 目录中存在的应用/服务；找不到 entryId 就明确告知，不要臆造安装命令。
+- 只处理当前机器消息与 resolver 共同确认的应用/服务；找不到复合身份就明确告知，不要臆造安装命令。
+- `sourceId+entryId+snapshot` 是本次解析授权的完整边界；显示名、历史消息、本地同 ID 条目、
+  installed-entries 和调用方提供的 install/connection 都不能扩大它。
+- resolver 必须先于 Docker 探测、包管理和所有执行类 `bash`；非 200 或复核失败没有 fallback。
 - 所有破坏性 docker 操作与 Agent 配置写入前必须有用户确认（risk_level: high）。
 - 回写状态优先用 PATCH 端点（自带 status 枚举校验与原子写）；仅端点不可用时降级 file-write，此时须自行保证结构合法（status 仅限六枚举值），否则界面加载会过滤掉脏条目。
 - **先校验后回写**：docker-app 必须健康校验通过、mcp 必须连接校验通过，才回写 `installed`——installed-entries 是「你校验过的事实」，不是「执行过命令」。
@@ -198,7 +263,8 @@ parameters:
 ## 与其他技能/系统的协作
 
 - **后端 installed-entries watcher**：消费你回写的 status，只在 `installed` 派生 docker-app 服务、中间态保留派生、终态清理，无需你手动调派生接口。
-- **installed-entries 回写端点**：`PATCH /api/installed-entries/:entryId/:deviceId`（结构化回写状态，原子写 + 自动广播刷新前端；旧客户端 404 时降级 file-write）。
+- **Registry 当前快照 resolver**：`POST /api/registry/acquisitions/resolve`（复核目录复合身份、canonical snapshot 与服务端真实配置；只授权本次读取，不记录安装事实）。
+- **installed-entries 回写端点**：`PATCH /api/installed-entries/:entryId/:deviceId`（body 携带 sourceId，结构化回写状态，原子写 + 自动广播刷新前端；旧客户端 404 时才降级 file-write）。
 - **agent-service mcp API**：`POST /api/mcp/install`（执行 postInstall + 连接测试）、`POST /api/agents/desirecore/mcp-servers`（注册）、`DELETE /api/agents/desirecore/mcp-servers/:serverId`（卸载）、`POST /api/mcp/test-connection`（验证）。
 - **task-management**：长安装可登记为任务跟踪进度。
 - **service-health**：派生出的服务由后端周期探活，你无需自行维护其健康。
