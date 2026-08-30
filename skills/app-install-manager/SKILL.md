@@ -51,9 +51,9 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
 `entryId`、deviceId、snapshot、install 或 connection。
 
 1. 从**当前这条**生命周期指令中提取唯一一行：
-   `RegistryCatalogAcquisition=<单行 JSON>`。App envelope 必须额外带
-   `operation:{action:"install"|"reinstall"|"uninstall",deviceId}`；Service resolver 为兼容旧调用方
-   允许缺省 operation，但 UI 发起的 Service lifecycle 也必须携带它，才能可靠结算。先把指令全文交给
+   `RegistryCatalogAcquisition=<单行 JSON>`。App/Service envelope 都必须带
+   `operation:{action:"install"|"reinstall"|"uninstall",deviceId,operationId}`；operationId 必须是小写
+   UUID，并且只代表这一次 lifecycle 意图。先把指令全文交给
    `parse-locator`，只取得 `sourceId+entryId+operation.deviceId` 的账本定位符；再用
    `parse-message` 校验完整 envelope：
 
@@ -115,6 +115,7 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
   "status": "installing | reinstalling | installed | uninstalling | failed | uninstalled",
   "conversationId": "<对话ID>",
   "messageId": "<消息ID>",
+  "operationId": "<本次操作UUID>",
   "catalogReceipt": {
     "schemaVersion": 1,
     "kind": "app | service",
@@ -165,9 +166,11 @@ UI 在发消息前已经写入中间态。locator 成功后，完整解析失败
 1. `GET /api/installed-entries` 取得当前实例记录；不得直读其它实例或构造新记录。
 2. 把 `{stage,locator,entries}` 交给脚本的 `plan-settlement`。stage 只能是
    `parse|resolver|human_gate|pre_execution`。它严格匹配 sourceId+entryId+deviceId 和与 operation
-   对应的中间态；同 ID 双来源不会串写，零条/多条都返回 settlement:null。
+   对应的中间态与 operationId；同 ID 双来源、跨设备或旧消息重放都不会串写，零条/多条都返回
+   settlement:null。
 3. settlement 非空时，按“回写安装记录的统一方式”PATCH 它给出的精确三元组和 status：
-   `installing → failed`，`reinstalling → installed`，`uninstalling → installed`。结算前后都不得执行
+   `installing → failed`，`reinstalling → installed`，`uninstalling → installed`，并原样携带
+   settlement.operationId。结算前后都不得执行
    Docker、包管理或安装脚本。settlement:null 时报告有界原因并停止，不按数组顺序、名称或设备猜测。
 4. Human Gate 取消也是正常停止而非悬空：首装回 `failed`，重装/卸载恢复 `installed`。resolver
    错误码与 reasons 在完成结算后原样说明。
@@ -185,6 +188,7 @@ parameters:
   method: PATCH
   body:
     sourceId: <locator 中的精确 sourceId>
+    operationId: <locator.operation.operationId>
     status: installed        # 六枚举之一
     # version: "<新版本>"    # 可选，重装升级时更新版本号
 ```
@@ -192,14 +196,15 @@ parameters:
 - `200` → 回写成功，前端自动刷新，**无需**再手动改文件。
 - `400` → status/sourceId 非法，检查取值。
 - `404 entry_not_found` → 该条中间态记录不存在（界面未写/已被清理）。**不要**重试或伪造记录；跳过并一句话提示用户重发指令即可。
-- receipt PATCH 的 `catalog_receipt_*` 400/409 表示候选非法、ownership/CAS/runtime/lifecycle 不一致；
+- receipt PATCH 的 `catalog_receipt_*` / `catalog_operation_mismatch` /
+  `catalog_status_transition_invalid` / `invalid_operation_id` 400/409
+  表示候选非法、ownership/CAS/runtime/lifecycle/operation 不一致；
   不得删字段、重建 receipt 或换 snapshot 重试。App 停止并按失败语义结算；MCP 先回滚刚注册的
   runtimeServerId，再结算。
-- **连接失败 / 路由 404（旧客户端无此端点）** → 只有不含 receipt 变更的旧 status-only 回写才允许
-  降级 file-write；新增/补全 lifecycle 或 runtimeServerId 的成功回写绝不降级，避免绕过 CAS。
+- **连接失败 / 路由 404（旧客户端无此端点）** → catalog lifecycle 回写不得降级 file-write；否则会
+  绕过 operationId 和 receipt CAS。停止并报告客户端不兼容。
 
-**降级 file-write**（仅旧 status-only 终态 PATCH 端点不可用时；receipt 新增/补全和目录 resolver
-绝无此降级）：读
+**降级 file-write**（仅无 catalog envelope 的历史普通操作可用；本节 catalog intent 绝无此降级）：读
 `installed-entries.json` → 按 `sourceId`+`entryId`+`deviceId` 精确定位那条中间态记录 → **只改
 `status`（保留 `installedAt` 等其余所有字段与其它条目）** → 写回整个文件（界面也写此文件，
 勿覆盖丢失）。来源缺失或存在多条候选时失败关闭，不得按同 ID 猜测。
@@ -225,7 +230,7 @@ parameters:
 6. **健康校验（先校验后回写，强制）**：按 installGuide 的验证地址或 manifest.exposes 的 `http://localhost:<port><path>`，`bash` 用 `curl` 轮询（最多 ~2 分钟）确认服务可达。**只有这步通过才算安装成功**——不要仅凭 `docker compose up -d` 无报错就回写 `installed`。
 7. **回写安装记录**（**本技能的核心职责**，按上方「回写安装记录的统一方式」）：
    - 健康校验通过 → 用 `build-receipt-patch` 把 resolver 原样 candidate 与 `status: installed` 组成
-     CAS-safe PATCH；不得本地重建 receipt。未通过/失败 → `status: failed`；重装失败但旧版本仍在
+     CAS-safe PATCH，并携带 locator.operationId；不得本地重建 receipt。未通过/失败 → `status: failed`；重装失败但旧版本仍在
      运行 → 回 `installed`（见状态语义表）。
    - 成功后无需手动派生服务——后端文件 watcher 检测到 `installed` 后自动派生；重装期间派生始终保留。
 8. **回报用户**：一句话总结结果 + 访问地址（成功）或失败原因 + 排查建议（失败）。
@@ -285,7 +290,8 @@ parameters:
 5. **连接校验（先校验后回写，强制）**：看第 3 步返回的 `connectionTest.success`，或单独 `POST /api/mcp/test-connection`（body `{connection}`）确认能连通、能列出工具。**只有校验通过才算安装成功**——不要仅凭 postInstall 命令退出码 0 就回写 `installed`（装了包不等于连得上）。
 6. **回写安装记录**（按「回写安装记录的统一方式」）：连接校验通过后，用脚本
    `build-receipt-patch` 原样接收 resolver 的 catalogReceipt candidate，只在其上补服务端 add 返回的
-   runtimeServerId，并与 `status: installed` 在同一次精确 PATCH 中写回原 installed-entry；禁止从
+   runtimeServerId，并与 locator.operationId、`status: installed` 在同一次精确 PATCH 中写回原
+   installed-entry；禁止从
    request snapshot/manifest 自建或替换 lifecycle。缺 candidate/runtimeServerId、candidate 被篡改或
    receipt CAS 回写失败时不得宣布成功，先按精确 runtimeServerId 回滚刚注册的 MCP，再按失败语义
    结算。连接校验失败 → `failed`（重装失败但旧配置仍可用 → 回 `installed`）。
@@ -304,15 +310,19 @@ parameters:
    ```yaml
    tool: HttpRequest
    parameters:
-     url: http://127.0.0.1:<agent-service-port>/api/agents/desirecore/mcp-servers/<entryId>?sourceId=<sourceId>&deviceId=<deviceId>
+     url: http://127.0.0.1:<agent-service-port>/api/agents/desirecore/mcp-servers/<entryId>?sourceId=<sourceId>&deviceId=<deviceId>&operationId=<operationId>
      method: DELETE
    ```
-   服务端从精确 installed-entry receipt 的 runtimeServerId 删除对应配置；不得按裸 entryId 删除，
+   URL 参数先用脚本 `build-service-delete` 从 locator 生成；operationId 必须原样来自 locator。服务端
+   从精确 installed-entry receipt 的 runtimeServerId 删除对应
+   配置；不得按裸 entryId 删除，
    也不得因为当前目录删除、listing-only 或 snapshot stale 改走 resolver。
    端点幂等。如安装时全局装了包，按需 `bash` 卸载（可选，多为无害保留）。http-api 服务无需执行
    动作，直接进第 3 步。
    - **旧客户端降级**：该 DELETE 端点是较新客户端才有的能力。若返回 **404 / Not Found / 路由不存在**，说明当前客户端版本尚未包含 mcp 卸载端点——**不要**当作卸载成功。此时回写安装记录为 `installed`（保持"仍在用"），并一句话告知用户"当前客户端版本不支持 mcp 服务卸载，请升级客户端后重试"。切勿手工编辑 agent.json 绕过（绕锁会丢并发更新）。
-3. **回写安装记录**（按「回写安装记录的统一方式」）：成功 → PATCH `status: uninstalled`；**失败（含 DELETE mcp-servers 端点 404 降级）→ PATCH `status: installed`** 并说明原因（勿留在 `uninstalling`）。
+3. **回写安装记录**（按「回写安装记录的统一方式」）：成功 → 用同一 operationId PATCH
+   `status: uninstalled`；**失败（含 DELETE mcp-servers 端点 404 降级）→ 用同一 operationId PATCH
+   `status: installed`** 并说明原因（勿留在 `uninstalling`）。
 4. 回报用户。
 
 ### 启动 / 停止 / 重启
@@ -331,6 +341,7 @@ parameters:
 | resolver 200 但身份/快照/manifest/指南不一致 | 视为不可信响应，先强制结算，不执行任何生命周期副作用 |
 | resolver 200 缺失/篡改 catalogReceipt 或 App lifecycle guide 超过 64 KiB | 拒绝执行；禁止本地补建/截断 lifecycle，先强制结算 |
 | receipt PATCH CAS/runtime/lifecycle 冲突 | 禁止修改候选绕过；MCP 回滚注册后结算，App 按失败语义结算 |
+| operationId 缺失/畸形或旧消息重放 | 失败关闭；不得用当前 installed-entry 的新 operationId 替换旧消息，禁止执行或结算新意图 |
 | Human Gate 取消 | 首装回 `failed`，重装/卸载回 `installed`，不得遗留中间态 |
 | docker 未运行 | 提示用户启动 Docker；首装回 `failed`，重装回 `installed` |
 | 端口被占用 | 列出占用进程，建议换端口或停占用，征求用户意见 |
@@ -344,7 +355,7 @@ parameters:
 ### 边界与安全
 
 - 新安装只处理当前机器消息与 resolver 共同确认的应用/服务；卸载只处理精确 installed ownership。
-- `sourceId+entryId+snapshot+operation.deviceId` 是本次边界；显示名、历史消息、本地同 ID 条目、
+- `sourceId+entryId+snapshot+operation.deviceId+operation.operationId` 是本次边界；显示名、历史消息、本地同 ID 条目、
   installed-entries 和调用方提供的 install/connection 都不能扩大它。
 - App resolver 必须先于 Docker 探测、包管理和所有执行类 `bash`；非 200 或复核失败没有 fallback，
   并必须先结算中间态。uninstall 不受当前 catalog listing/stale 阻断，但只能使用精确 ownership 与

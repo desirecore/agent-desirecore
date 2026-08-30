@@ -6,6 +6,7 @@ import test from 'node:test'
 
 import {
   buildInstalledCatalogReceiptPatch,
+  buildServiceCatalogDeleteTarget,
   completeServiceCatalogReceipt,
   evaluateRegistryCatalogResolverResult,
   parseRegistryCatalogAcquisitionMessage,
@@ -19,6 +20,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const skillPath = join(here, '..', 'SKILL.md')
 const commitA = 'a'.repeat(40)
 const commitB = 'b'.repeat(40)
+const operationA = '11111111-1111-4111-8111-111111111111'
+const operationB = '22222222-2222-4222-8222-222222222222'
 
 function envelope(overrides = {}) {
   const sourceId = overrides.sourceId ?? 'registry:source-a'
@@ -38,6 +41,7 @@ function envelope(overrides = {}) {
     operation: {
       action: overrides.action ?? 'install',
       deviceId: overrides.deviceId ?? 'device-a',
+      operationId: overrides.operationId ?? operationA,
     },
   }
 }
@@ -53,6 +57,7 @@ function pendingEntry(overrides = {}) {
     deviceId: overrides.deviceId ?? 'device-a',
     deviceName: overrides.deviceName ?? 'Device A',
     status: overrides.status ?? 'installing',
+    operationId: overrides.operationId ?? operationA,
   }
 }
 
@@ -138,7 +143,9 @@ test('same entryId from source A and source B remains two exact acquisition iden
   assert.equal(sourceA.request.entryId, sourceB.request.entryId)
   assert.notEqual(sourceA.request.sourceId, sourceB.request.sourceId)
   assert.notDeepEqual(sourceA.request.snapshot, sourceB.request.snapshot)
-  assert.deepEqual(sourceA.request.operation, { action: 'install', deviceId: 'device-a' })
+  assert.deepEqual(sourceA.request.operation, {
+    action: 'install', deviceId: 'device-a', operationId: operationA,
+  })
 })
 
 test('400/404 and every real resolver 409 preserve exact error codes and block execution', () => {
@@ -195,11 +202,21 @@ test('parsed locator settles resolver/Human Gate/pre-execution stops without cro
         sourceId: 'registry:source-b',
         entryId: 'same-id',
         deviceId: 'device-a',
+        operationId: operationA,
         status: 'installed',
       },
       reason: `registry_catalog_${stage}_stopped`,
     })
   }
+  assert.equal(planRegistryCatalogPreExecutionSettlement({
+    stage: 'resolver',
+    locator: acquisition.locator,
+    entries: [pendingEntry({
+      sourceId: 'registry:source-b',
+      status: 'reinstalling',
+      operationId: operationB,
+    })],
+  }).settlement, null)
 })
 
 test('first install stops as failed, uninstall/Human Gate cancellation restores installed', () => {
@@ -257,7 +274,7 @@ test('a parsed App locator can settle an invalid snapshot without authorizing ac
   assert.deepEqual(locator, {
     sourceId: 'registry:source-a',
     entryId: 'same-id',
-    operation: { action: 'install', deviceId: 'device-a' },
+    operation: { action: 'install', deviceId: 'device-a', operationId: operationA },
   })
   assert.throws(() => parseRegistryCatalogAcquisitionMessage(message), /catalog_commit_invalid/)
   assert.equal(planRegistryCatalogPreExecutionSettlement({
@@ -369,9 +386,11 @@ test('server receipt candidate is mandatory, immutable, and capped at 64 KiB', (
   assert.deepEqual(buildInstalledCatalogReceiptPatch({
     sourceId: expected.sourceId,
     entryId: expected.entryId,
+    operationId: expected.operation.operationId,
     catalogReceipt: candidate,
   }), {
     sourceId: expected.sourceId,
+    operationId: expected.operation.operationId,
     status: 'installed',
     catalogReceipt: candidate,
   })
@@ -410,14 +429,34 @@ test('Service keeps only resolver-returned install and connection after exact id
   })
 })
 
-test('Service operation remains optional for resolver compatibility', () => {
+test('App and Service both require a valid operation UUID', () => {
   const { operation: _operation, ...serviceRequest } = request()
-  const parsed = parseRegistryCatalogAcquisitionMessage(
-    `RegistryCatalogAcquisition=${JSON.stringify({ ...serviceRequest, kind: 'service' })}`
+  assert.throws(
+    () => parseRegistryCatalogAcquisitionMessage(
+      `RegistryCatalogAcquisition=${JSON.stringify({ ...serviceRequest, kind: 'service' })}`
+    ),
+    /(?:request|operation)_invalid/
   )
-  assert.equal(parsed.locator, undefined)
-  assert.equal(parsed.request.kind, 'service')
-  assert.equal(parsed.request.operation, undefined)
+  const missingId = request()
+  delete missingId.operation.operationId
+  assert.throws(
+    () => parseRegistryCatalogAcquisitionMessage(
+      `RegistryCatalogAcquisition=${JSON.stringify(missingId)}`
+    ),
+    /operation_invalid/
+  )
+  for (const kind of ['app', 'service']) {
+    assert.throws(
+      () => parseRegistryCatalogAcquisitionMessage(
+        `RegistryCatalogAcquisition=${JSON.stringify({
+          ...request(),
+          kind,
+          operation: { ...request().operation, operationId: 'not-a-uuid' },
+        })}`
+      ),
+      /operation_id_invalid/
+    )
+  }
 })
 
 test('Service 200 response without install or connection fails closed before execution', () => {
@@ -451,10 +490,12 @@ test('MCP only completes the server receipt candidate and builds a CAS-safe PATC
   assert.deepEqual(buildInstalledCatalogReceiptPatch({
     sourceId: expected.sourceId,
     entryId: expected.entryId,
+    operationId: expected.operation.operationId,
     catalogReceipt: candidate,
     runtimeServerId,
   }), {
     sourceId: expected.sourceId,
+    operationId: expected.operation.operationId,
     status: 'installed',
     catalogReceipt: { ...candidate, runtimeServerId },
   })
@@ -466,6 +507,7 @@ test('MCP only completes the server receipt candidate and builds a CAS-safe PATC
     () => buildInstalledCatalogReceiptPatch({
       sourceId: 'registry:source-b',
       entryId: expected.entryId,
+      operationId: expected.operation.operationId,
       catalogReceipt: candidate,
       runtimeServerId,
     }),
@@ -491,7 +533,14 @@ test('Service uninstall authorizes only exact active service receipt and runtime
     sourceId: expected.sourceId,
     entryId: expected.entryId,
     deviceId: expected.operation.deviceId,
+    operationId: expected.operation.operationId,
     runtimeServerId: registryCatalogRuntimeServerId(expected.sourceId, expected.entryId),
+  })
+  assert.deepEqual(buildServiceCatalogDeleteTarget(locator), {
+    entryId: expected.entryId,
+    sourceId: expected.sourceId,
+    deviceId: expected.operation.deviceId,
+    operationId: expected.operation.operationId,
   })
   for (const invalidReceipt of [
     { ...receipt, kind: undefined },
@@ -509,6 +558,11 @@ test('Service uninstall authorizes only exact active service receipt and runtime
     snapshot: expected.snapshot,
     entries: [{ ...entry, sourceId: 'registry:source-b' }],
   }).deleteAllowed, false)
+  assert.equal(resolveServiceUninstallOwnership({
+    locator,
+    snapshot: expected.snapshot,
+    entries: [{ ...entry, operationId: operationB }],
+  }).deleteAllowed, false)
 })
 
 test('Skill contract has no fixed official/local Registry fallback and resolves before execution', async () => {
@@ -519,6 +573,8 @@ test('Skill contract has no fixed official/local Registry fallback and resolves 
   assert.match(skill, /plan-settlement/)
   assert.match(skill, /lifecycle receipt/)
   assert.match(skill, /registry_acquisition_receipt_missing/)
+  assert.match(skill, /build-service-delete/)
+  assert.match(skill, /operationId=<operationId>/)
   assert.ok(skill.indexOf('解析机器消息并调用 resolver') < skill.indexOf('环境校验'))
   assert.ok(skill.indexOf('### 执行前协议') < skill.indexOf('`docker version`'))
 })

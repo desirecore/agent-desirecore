@@ -8,6 +8,7 @@ const IMMUTABLE_COMMIT = /^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$/
 const SHA256 = /^[a-fA-F0-9]{64}$/
 const SAFE_SOURCE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,159}$/
 const SAFE_ENTRY_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,239}$/
+const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 const RESOLVER_ERROR_CODES = new Set([
   'registry_acquisition_invalid_request',
   'registry_acquisition_not_found',
@@ -96,8 +97,8 @@ export function validateRegistryCatalogAcquisitionRequest(value) {
     )) ||
     (value.kind === 'service' && !hasOnlyKeys(
       value,
-      ['kind', 'sourceId', 'entryId', 'snapshot'],
-      ['operation', 'install', 'connection']
+      ['kind', 'sourceId', 'entryId', 'snapshot', 'operation'],
+      ['install', 'connection']
     ))
   ) {
     fail('registry_catalog_request_invalid')
@@ -116,37 +117,38 @@ export function validateRegistryCatalogAcquisitionRequest(value) {
     sourceId,
     entryId,
     snapshot,
-    ...(value.operation !== undefined ? { operation: validateOperation(value.operation) } : {}),
+    operation: validateOperation(value.operation),
     ...(value.kind === 'service' && value.install !== undefined ? { install: value.install } : {}),
     ...(value.kind === 'service' && value.connection !== undefined ? { connection: value.connection } : {}),
   }
 }
 
 function validateOperation(value) {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['action', 'deviceId'])) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['action', 'deviceId', 'operationId'])) {
     fail('registry_catalog_operation_invalid')
   }
   if (!['install', 'reinstall', 'uninstall'].includes(value.action)) {
     fail('registry_catalog_operation_action_invalid')
   }
+  const operationId = requireBoundedString(value.operationId, 'operation_id', 36)
+  if (!OPERATION_ID.test(operationId)) fail('registry_catalog_operation_id_invalid')
   return {
     action: value.action,
     deviceId: requireBoundedString(value.deviceId, 'operation_device_id', 200),
+    operationId,
   }
 }
 
 export function validateRegistryCatalogAcquisitionEnvelope(value) {
   const request = validateRegistryCatalogAcquisitionRequest(value)
-  return request.operation
-    ? {
-        request,
-        locator: {
-          sourceId: request.sourceId,
-          entryId: request.entryId,
-          operation: request.operation,
-        },
-      }
-    : { request }
+  return {
+    request,
+    locator: {
+      sourceId: request.sourceId,
+      entryId: request.entryId,
+      operation: request.operation,
+    },
+  }
 }
 
 function parseMachineLineJson(message) {
@@ -237,7 +239,8 @@ function normalizePendingEntry(value) {
     typeof value.entryId !== 'string' || !SAFE_ENTRY_ID.test(value.entryId) ||
     typeof value.deviceId !== 'string' || value.deviceId.length === 0 || value.deviceId.length > 240 || /[\r\n\0]/.test(value.deviceId) ||
     typeof value.deviceName !== 'string' || value.deviceName.length === 0 || value.deviceName.length > 240 || /[\r\n\0]/.test(value.deviceName) ||
-    typeof value.status !== 'string' || !INTERMEDIATE_STATUSES.has(value.status)
+    typeof value.status !== 'string' || !INTERMEDIATE_STATUSES.has(value.status) ||
+    typeof value.operationId !== 'string' || !OPERATION_ID.test(value.operationId)
   ) {
     return undefined
   }
@@ -247,6 +250,7 @@ function normalizePendingEntry(value) {
     deviceId: value.deviceId,
     deviceName: value.deviceName,
     status: value.status,
+    operationId: value.operationId,
   }
 }
 
@@ -277,6 +281,7 @@ export function planRegistryCatalogPreExecutionSettlement(input) {
     .map(normalizePendingEntry)
     .filter((entry) => entry !== undefined)
     .filter((entry) => entry.status === expectedStatus && entry.deviceId === operation.deviceId)
+    .filter((entry) => entry.operationId === operation.operationId)
     .filter((entry) => entry.sourceId === sourceId && entry.entryId === entryId)
 
   if (candidates.length !== 1) {
@@ -298,6 +303,7 @@ export function planRegistryCatalogPreExecutionSettlement(input) {
       sourceId: target.sourceId,
       entryId: target.entryId,
       deviceId: target.deviceId,
+      operationId: target.operationId,
       // A first install has no usable prior resource, while reinstall/uninstall must restore it.
       status: target.status === 'installing' ? 'failed' : 'installed',
     },
@@ -399,11 +405,17 @@ export function completeServiceCatalogReceipt(candidateValue, runtimeServerIdVal
 
 /** Build the exact PATCH body accepted by the server-side receipt CAS. */
 export function buildInstalledCatalogReceiptPatch(input) {
-  if (!isRecord(input) || !hasOnlyKeys(input, ['sourceId', 'entryId', 'catalogReceipt'], ['runtimeServerId'])) {
+  if (!isRecord(input) || !hasOnlyKeys(
+    input,
+    ['sourceId', 'entryId', 'operationId', 'catalogReceipt'],
+    ['runtimeServerId']
+  )) {
     fail('registry_catalog_receipt_patch_input_invalid')
   }
   const sourceId = requireBoundedString(input.sourceId, 'receipt_patch_source_id', 160)
   const entryId = requireBoundedString(input.entryId, 'receipt_patch_entry_id', 240)
+  const operationId = requireBoundedString(input.operationId, 'receipt_patch_operation_id', 36)
+  if (!OPERATION_ID.test(operationId)) fail('registry_catalog_receipt_patch_operation_id_invalid')
   const candidate = validateServerCatalogReceipt(input.catalogReceipt)
   if (candidate.catalogSourceId !== sourceId || candidate.entryId !== entryId) {
     fail('registry_catalog_receipt_identity_mismatch')
@@ -414,7 +426,7 @@ export function buildInstalledCatalogReceiptPatch(input) {
         if (input.runtimeServerId !== undefined) fail('registry_catalog_receipt_runtime_server_id_forbidden')
         return candidate
       })()
-  return { sourceId, status: 'installed', catalogReceipt }
+  return { sourceId, operationId, status: 'installed', catalogReceipt }
 }
 
 /** Validate exact MCP uninstall ownership without consulting the current catalog. */
@@ -439,6 +451,7 @@ export function resolveServiceUninstallOwnership(input) {
     entry.sourceId === sourceId &&
     entry.entryId === entryId &&
     entry.deviceId === operation.deviceId &&
+    entry.operationId === operation.operationId &&
     entry.status === 'uninstalling'
   )
   if (matches.length !== 1) {
@@ -477,7 +490,28 @@ export function resolveServiceUninstallOwnership(input) {
     sourceId,
     entryId,
     deviceId: operation.deviceId,
+    operationId: operation.operationId,
     runtimeServerId,
+  }
+}
+
+/** Build the exact operation-bound query tuple for catalog MCP DELETE. */
+export function buildServiceCatalogDeleteTarget(locator) {
+  if (!isRecord(locator) || !hasOnlyKeys(locator, ['sourceId', 'entryId', 'operation'])) {
+    fail('registry_catalog_service_delete_locator_invalid')
+  }
+  const sourceId = requireBoundedString(locator.sourceId, 'service_delete_source_id', 160)
+  const entryId = requireBoundedString(locator.entryId, 'service_delete_entry_id', 240)
+  if (!SAFE_SOURCE_ID.test(sourceId) || !SAFE_ENTRY_ID.test(entryId)) {
+    fail('registry_catalog_service_delete_locator_invalid')
+  }
+  const operation = validateOperation(locator.operation)
+  if (operation.action !== 'uninstall') fail('registry_catalog_service_delete_operation_invalid')
+  return {
+    entryId,
+    sourceId,
+    deviceId: operation.deviceId,
+    operationId: operation.operationId,
   }
 }
 
@@ -648,7 +682,12 @@ async function main() {
     process.stdout.write(`${JSON.stringify(resolveServiceUninstallOwnership(input))}\n`)
     return
   }
-  fail('usage: registry-catalog-acquisition.mjs parse-locator|parse-message|evaluate-response|plan-settlement|validate-receipt-candidate|build-receipt-patch|resolve-service-uninstall')
+  if (command === 'build-service-delete') {
+    const input = JSON.parse(await readStdin())
+    process.stdout.write(`${JSON.stringify(buildServiceCatalogDeleteTarget(input))}\n`)
+    return
+  }
+  fail('usage: registry-catalog-acquisition.mjs parse-locator|parse-message|evaluate-response|plan-settlement|validate-receipt-candidate|build-receipt-patch|resolve-service-uninstall|build-service-delete')
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
