@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import {
-  buildInstalledCatalogReceipt,
+  buildInstalledCatalogReceiptPatch,
+  completeServiceCatalogReceipt,
   evaluateRegistryCatalogResolverResult,
   parseRegistryCatalogAcquisitionMessage,
   parseRegistryCatalogAcquisitionLocatorMessage,
@@ -55,6 +56,30 @@ function pendingEntry(overrides = {}) {
   }
 }
 
+function manifestFor(expected) {
+  return {
+    id: expected.entryId,
+    type: expected.kind === 'service' ? 'mcp' : 'docker-app',
+    name: 'Same ID',
+    version: expected.snapshot.releaseVersion,
+    description: 'Server-authorized lifecycle',
+  }
+}
+
+function receiptFor(expected, overrides = {}) {
+  const manifest = manifestFor(expected)
+  return {
+    ...expected.snapshot,
+    kind: expected.kind,
+    entryId: expected.entryId,
+    lifecycle: {
+      manifest,
+      ...(expected.kind === 'app' ? { installGuide: '# Server-authorized guide\n' } : {}),
+    },
+    ...overrides,
+  }
+}
+
 function success(expected, overrides = {}) {
   return {
     success: true,
@@ -63,8 +88,9 @@ function success(expected, overrides = {}) {
       sourceId: expected.sourceId,
       entryId: expected.entryId,
       snapshot: expected.snapshot,
-      manifest: { id: expected.entryId, type: 'docker-app', name: 'Same ID' },
+      manifest: manifestFor(expected),
       installGuide: '# Server-authorized guide\n',
+      catalogReceipt: receiptFor(expected),
       ...overrides,
     },
   }
@@ -262,8 +288,9 @@ test('valid 200 response returns only server-authorized App manifest and install
     sourceId: expected.sourceId,
     entryId: expected.entryId,
     snapshot: expected.snapshot,
-    manifest: { id: expected.entryId, type: 'docker-app', name: 'Same ID' },
+    manifest: manifestFor(expected),
     installGuide: '# Server-authorized guide\n',
+    catalogReceipt: receiptFor(expected),
   })
 })
 
@@ -291,6 +318,65 @@ test('response source, snapshot, manifest identity, or install guide mismatch fa
   )
 })
 
+test('server receipt candidate is mandatory, immutable, and capped at 64 KiB', () => {
+  const expected = request()
+  const missing = success(expected)
+  delete missing.data.catalogReceipt
+  assert.throws(
+    () => evaluateRegistryCatalogResolverResult(expected, 200, missing),
+    /resolver_response_invalid/
+  )
+  assert.throws(
+    () => evaluateRegistryCatalogResolverResult(expected, 200, success(expected, {
+      catalogReceipt: {
+        ...receiptFor(expected),
+        catalogCommit: commitB,
+      },
+    })),
+    /receipt_identity_mismatch/
+  )
+  assert.throws(
+    () => evaluateRegistryCatalogResolverResult(expected, 200, success(expected, {
+      catalogReceipt: {
+        ...receiptFor(expected),
+        lifecycle: {
+          ...receiptFor(expected).lifecycle,
+          manifest: { ...manifestFor(expected), version: '9.9.9' },
+        },
+      },
+    })),
+    /lifecycle_identity_mismatch/
+  )
+  const oversizedGuide = 'x'.repeat(64 * 1024 + 1)
+  assert.throws(
+    () => evaluateRegistryCatalogResolverResult(expected, 200, success(expected, {
+      installGuide: oversizedGuide,
+      catalogReceipt: {
+        ...receiptFor(expected),
+        lifecycle: { manifest: manifestFor(expected), installGuide: oversizedGuide },
+      },
+    })),
+    /receipt_install_guide_invalid/
+  )
+  assert.throws(
+    () => evaluateRegistryCatalogResolverResult(expected, 200, success(expected, {
+      installGuide: '# changed guide\n',
+    })),
+    /receipt_install_guide_mismatch/
+  )
+
+  const candidate = receiptFor(expected)
+  assert.deepEqual(buildInstalledCatalogReceiptPatch({
+    sourceId: expected.sourceId,
+    entryId: expected.entryId,
+    catalogReceipt: candidate,
+  }), {
+    sourceId: expected.sourceId,
+    status: 'installed',
+    catalogReceipt: candidate,
+  })
+})
+
 test('Service keeps only resolver-returned install and connection after exact identity validation', () => {
   const expected = {
     ...request(),
@@ -305,9 +391,10 @@ test('Service keeps only resolver-returned install and connection after exact id
       sourceId: expected.sourceId,
       entryId: expected.entryId,
       snapshot: expected.snapshot,
-      manifest: { id: expected.entryId, type: 'mcp', name: 'Example MCP' },
+      manifest: manifestFor(expected),
       install: { method: 'npx', packageName: '@example/server@1.2.3' },
       connection: { transport: 'stdio', command: 'npx', args: ['@example/server@1.2.3'] },
+      catalogReceipt: receiptFor(expected),
     },
   })
   assert.deepEqual(result, {
@@ -316,9 +403,10 @@ test('Service keeps only resolver-returned install and connection after exact id
     sourceId: expected.sourceId,
     entryId: expected.entryId,
     snapshot: expected.snapshot,
-    manifest: { id: expected.entryId, type: 'mcp', name: 'Example MCP' },
+    manifest: manifestFor(expected),
     install: { method: 'npx', packageName: '@example/server@1.2.3' },
     connection: { transport: 'stdio', command: 'npx', args: ['@example/server@1.2.3'] },
+    catalogReceipt: receiptFor(expected),
   })
 })
 
@@ -339,7 +427,8 @@ test('Service 200 response without install or connection fails closed before exe
     sourceId: expected.sourceId,
     entryId: expected.entryId,
     snapshot: expected.snapshot,
-    manifest: { id: expected.entryId, type: 'mcp' },
+    manifest: manifestFor(expected),
+    catalogReceipt: receiptFor(expected),
   }
   assert.throws(() => evaluateRegistryCatalogResolverResult(expected, 200, {
     success: true,
@@ -351,32 +440,37 @@ test('Service 200 response without install or connection fails closed before exe
   }), /resolver_response_invalid/)
 })
 
-test('MCP runtimeServerId is persisted only inside the validated installed-entry receipt', () => {
-  const expected = request()
+test('MCP only completes the server receipt candidate and builds a CAS-safe PATCH', () => {
+  const expected = { ...request(), kind: 'service' }
   const runtimeServerId = registryCatalogRuntimeServerId(expected.sourceId, expected.entryId)
-  assert.deepEqual(buildInstalledCatalogReceipt({
-    kind: 'service',
-    snapshot: expected.snapshot,
-    entryId: expected.entryId,
-    runtimeServerId,
-  }), {
-    ...expected.snapshot,
-    kind: 'service',
-    entryId: expected.entryId,
+  const candidate = receiptFor(expected)
+  assert.deepEqual(completeServiceCatalogReceipt(candidate, runtimeServerId), {
+    ...candidate,
     runtimeServerId,
   })
-  assert.throws(() => buildInstalledCatalogReceipt({
-    kind: 'service',
-    snapshot: expected.snapshot,
+  assert.deepEqual(buildInstalledCatalogReceiptPatch({
+    sourceId: expected.sourceId,
     entryId: expected.entryId,
-    runtimeServerId: 'bad/runtime/key',
-  }), /runtime_server_id_invalid/)
-  assert.throws(() => buildInstalledCatalogReceipt({
-    kind: 'service',
-    snapshot: expected.snapshot,
-    entryId: expected.entryId,
-    runtimeServerId: 'well_formed_but_wrong',
-  }), /runtime_server_id_mismatch/)
+    catalogReceipt: candidate,
+    runtimeServerId,
+  }), {
+    sourceId: expected.sourceId,
+    status: 'installed',
+    catalogReceipt: { ...candidate, runtimeServerId },
+  })
+  assert.throws(
+    () => completeServiceCatalogReceipt(candidate, 'well_formed_but_wrong'),
+    /runtime_server_id_mismatch/
+  )
+  assert.throws(
+    () => buildInstalledCatalogReceiptPatch({
+      sourceId: 'registry:source-b',
+      entryId: expected.entryId,
+      catalogReceipt: candidate,
+      runtimeServerId,
+    }),
+    /receipt_identity_mismatch/
+  )
 })
 
 test('Service uninstall authorizes only exact active service receipt and runtime key', () => {
@@ -386,12 +480,10 @@ test('Service uninstall authorizes only exact active service receipt and runtime
     entryId: expected.entryId,
     operation: expected.operation,
   }
-  const receipt = buildInstalledCatalogReceipt({
-    kind: 'service',
-    snapshot: expected.snapshot,
-    entryId: expected.entryId,
-    runtimeServerId: registryCatalogRuntimeServerId(expected.sourceId, expected.entryId),
-  })
+  const receipt = completeServiceCatalogReceipt(
+    receiptFor({ ...expected, kind: 'service' }),
+    registryCatalogRuntimeServerId(expected.sourceId, expected.entryId)
+  )
   const entry = { ...pendingEntry({ status: 'uninstalling' }), catalogReceipt: receipt }
   assert.deepEqual(resolveServiceUninstallOwnership({ locator, snapshot: expected.snapshot, entries: [entry] }), {
     allowed: true,

@@ -305,36 +305,116 @@ export function planRegistryCatalogPreExecutionSettlement(input) {
   }
 }
 
-/** Build the only receipt shape accepted by installed-entries; it remains in that single ledger. */
-export function buildInstalledCatalogReceipt(input) {
-  if (!isRecord(input) || !hasOnlyKeys(input, ['kind', 'snapshot', 'entryId'], ['runtimeServerId'])) {
-    fail('registry_catalog_receipt_input_invalid')
+function validateLifecycleManifest(value, kind, entryId, releaseVersion) {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'name', 'type', 'version', 'description'])) {
+    fail('registry_catalog_receipt_lifecycle_manifest_invalid')
   }
-  if (input.kind !== 'app' && input.kind !== 'service') fail('registry_catalog_receipt_kind_invalid')
-  const snapshot = validateSnapshot(input.snapshot)
-  const entryId = requireBoundedString(input.entryId, 'receipt_entry_id', 240)
+  const id = requireBoundedString(value.id, 'receipt_lifecycle_id', 240)
+  const name = requireBoundedString(value.name, 'receipt_lifecycle_name', 160)
+  const version = requireBoundedString(value.version, 'receipt_lifecycle_version', 160)
+  if (typeof value.description !== 'string' || value.description.length > 4096 || value.description.includes('\0')) {
+    fail('registry_catalog_receipt_lifecycle_description_invalid')
+  }
+  const expectedType = kind === 'app' ? 'docker-app' : 'mcp'
+  if (id !== entryId || version !== releaseVersion || value.type !== expectedType) {
+    fail('registry_catalog_receipt_lifecycle_identity_mismatch')
+  }
+  return { id, name, type: expectedType, version, description: value.description }
+}
+
+/** Validate, but never synthesize, the server-issued immutable lifecycle receipt candidate. */
+export function validateServerCatalogReceipt(value, expected) {
+  if (!isRecord(value) || !hasOnlyKeys(
+    value,
+    ['schemaVersion', 'kind', 'catalogSourceId', 'entryId', 'catalogCommit', 'catalogPath', 'releaseVersion', 'lifecycle'],
+    ['contentRef', 'contentSha256', 'runtimeServerId']
+  )) {
+    fail('registry_catalog_receipt_invalid')
+  }
+  if (value.kind !== 'app' && value.kind !== 'service') fail('registry_catalog_receipt_kind_invalid')
+  const {
+    kind,
+    entryId: rawEntryId,
+    lifecycle: rawLifecycle,
+    runtimeServerId: rawRuntimeServerId,
+    ...snapshotValue
+  } = value
+  const snapshot = validateSnapshot(snapshotValue)
+  const entryId = requireBoundedString(rawEntryId, 'receipt_entry_id', 240)
   if (!SAFE_ENTRY_ID.test(entryId)) fail('registry_catalog_receipt_entry_id_invalid')
+  if (!isRecord(rawLifecycle) || !hasOnlyKeys(rawLifecycle, ['manifest'], ['installGuide'])) {
+    fail('registry_catalog_receipt_lifecycle_invalid')
+  }
+  const manifest = validateLifecycleManifest(rawLifecycle.manifest, kind, entryId, snapshot.releaseVersion)
+  let installGuide
+  if (kind === 'app') {
+    installGuide = requireBoundedText(rawLifecycle.installGuide, 'receipt_install_guide', 64 * 1024)
+  } else if (rawLifecycle.installGuide !== undefined) {
+    fail('registry_catalog_receipt_install_guide_forbidden')
+  }
   let runtimeServerId
-  if (input.runtimeServerId !== undefined) {
-    runtimeServerId = requireBoundedString(input.runtimeServerId, 'receipt_runtime_server_id', 100)
+  if (rawRuntimeServerId !== undefined) {
+    runtimeServerId = requireBoundedString(rawRuntimeServerId, 'receipt_runtime_server_id', 100)
     if (!/^[a-zA-Z0-9._-]+$/.test(runtimeServerId)) {
       fail('registry_catalog_receipt_runtime_server_id_invalid')
     }
-    const expectedComposite = registryCatalogRuntimeServerId(snapshot.catalogSourceId, entryId)
+    if (kind !== 'service') fail('registry_catalog_receipt_runtime_server_id_forbidden')
+  }
+  if (expected) {
     if (
-      input.kind !== 'service' ||
-      (runtimeServerId !== expectedComposite &&
-        !(snapshot.catalogSourceId === 'registry:official' && runtimeServerId === entryId))
+      kind !== expected.kind ||
+      entryId !== expected.entryId ||
+      snapshot.catalogSourceId !== expected.sourceId ||
+      !snapshotsEqual(snapshot, expected.snapshot)
     ) {
-      fail('registry_catalog_receipt_runtime_server_id_mismatch')
+      fail('registry_catalog_receipt_identity_mismatch')
     }
   }
   return {
     ...snapshot,
-    kind: input.kind,
+    kind,
     entryId,
-    ...(runtimeServerId ? { runtimeServerId } : {}),
+    lifecycle: {
+      manifest,
+      ...(installGuide !== undefined ? { installGuide } : {}),
+    },
+    ...(runtimeServerId !== undefined ? { runtimeServerId } : {}),
   }
+}
+
+/** Add only the server-signed MCP runtime key; snapshot and lifecycle remain byte-for-byte data. */
+export function completeServiceCatalogReceipt(candidateValue, runtimeServerIdValue) {
+  const candidate = validateServerCatalogReceipt(candidateValue)
+  if (candidate.kind !== 'service' || candidate.runtimeServerId !== undefined) {
+    fail('registry_catalog_receipt_completion_invalid')
+  }
+  const runtimeServerId = requireBoundedString(runtimeServerIdValue, 'receipt_runtime_server_id', 100)
+  if (!/^[a-zA-Z0-9._-]+$/.test(runtimeServerId)) {
+    fail('registry_catalog_receipt_runtime_server_id_invalid')
+  }
+  const expectedComposite = registryCatalogRuntimeServerId(candidate.catalogSourceId, candidate.entryId)
+  if (runtimeServerId !== expectedComposite) fail('registry_catalog_receipt_runtime_server_id_mismatch')
+  return { ...candidate, runtimeServerId }
+}
+
+/** Build the exact PATCH body accepted by the server-side receipt CAS. */
+export function buildInstalledCatalogReceiptPatch(input) {
+  if (!isRecord(input) || !hasOnlyKeys(input, ['sourceId', 'entryId', 'catalogReceipt'], ['runtimeServerId'])) {
+    fail('registry_catalog_receipt_patch_input_invalid')
+  }
+  const sourceId = requireBoundedString(input.sourceId, 'receipt_patch_source_id', 160)
+  const entryId = requireBoundedString(input.entryId, 'receipt_patch_entry_id', 240)
+  const candidate = validateServerCatalogReceipt(input.catalogReceipt)
+  if (candidate.catalogSourceId !== sourceId || candidate.entryId !== entryId) {
+    fail('registry_catalog_receipt_identity_mismatch')
+  }
+  const catalogReceipt = candidate.kind === 'service'
+    ? completeServiceCatalogReceipt(candidate, input.runtimeServerId)
+    : (() => {
+        if (input.runtimeServerId !== undefined) fail('registry_catalog_receipt_runtime_server_id_forbidden')
+        return candidate
+      })()
+  return { sourceId, status: 'installed', catalogReceipt }
 }
 
 /** Validate exact MCP uninstall ownership without consulting the current catalog. */
@@ -370,16 +450,18 @@ export function resolveServiceUninstallOwnership(input) {
         : 'registry_catalog_pending_intent_ambiguous',
     }
   }
-  const receipt = matches[0].catalogReceipt
-  if (!isRecord(receipt) || receipt.kind !== 'service' || receipt.entryId !== entryId) {
+  const receiptValue = matches[0].catalogReceipt
+  if (!isRecord(receiptValue)) {
     return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_receipt_missing' }
   }
-  const runtimeServerId = typeof receipt.runtimeServerId === 'string' ? receipt.runtimeServerId : ''
-  if (
-    runtimeServerId.length === 0 ||
-    runtimeServerId.length > 100 ||
-    !/^[a-zA-Z0-9._-]+$/.test(runtimeServerId)
-  ) {
+  let receipt
+  try {
+    receipt = validateServerCatalogReceipt(receiptValue, { kind: 'service', sourceId, entryId, snapshot })
+  } catch {
+    return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_ownership_mismatch' }
+  }
+  const runtimeServerId = receipt.runtimeServerId ?? ''
+  if (!runtimeServerId) {
     return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_receipt_missing' }
   }
   const expectedComposite = registryCatalogRuntimeServerId(sourceId, entryId)
@@ -387,21 +469,6 @@ export function resolveServiceUninstallOwnership(input) {
     runtimeServerId !== expectedComposite &&
     !(sourceId === 'registry:official' && runtimeServerId === entryId)
   ) {
-    return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_ownership_mismatch' }
-  }
-  let receiptSnapshot
-  try {
-    const {
-      kind: _kind,
-      entryId: _entryId,
-      runtimeServerId: _runtimeServerId,
-      ...snapshotValue
-    } = receipt
-    receiptSnapshot = validateSnapshot(snapshotValue)
-  } catch {
-    return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_ownership_mismatch' }
-  }
-  if (receiptSnapshot.catalogSourceId !== sourceId || !snapshotsEqual(receiptSnapshot, snapshot)) {
     return { allowed: false, deleteAllowed: false, reason: 'registry_acquisition_ownership_mismatch' }
   }
   return {
@@ -421,7 +488,7 @@ function validateSuccessData(expected, body) {
   const data = body.data
   if (!hasOnlyKeys(
     data,
-    ['kind', 'sourceId', 'entryId', 'snapshot', 'manifest'],
+    ['kind', 'sourceId', 'entryId', 'snapshot', 'manifest', 'catalogReceipt'],
     ['install', 'connection', 'installGuide']
   )) {
     fail('registry_catalog_resolver_response_invalid')
@@ -444,9 +511,29 @@ function validateSuccessData(expected, body) {
   if (!isRecord(data.manifest) || data.manifest.id !== expected.entryId) {
     fail('registry_catalog_resolver_manifest_identity_mismatch')
   }
+  const catalogReceipt = validateServerCatalogReceipt(data.catalogReceipt, {
+    kind: expected.kind,
+    sourceId: expected.sourceId,
+    entryId: expected.entryId,
+    snapshot: expected.snapshot,
+  })
+  if (catalogReceipt.runtimeServerId !== undefined) {
+    fail('registry_catalog_resolver_receipt_runtime_forbidden')
+  }
+  const lifecycleManifest = catalogReceipt.lifecycle.manifest
+  if (
+    data.manifest.name !== lifecycleManifest.name ||
+    data.manifest.version !== lifecycleManifest.version ||
+    data.manifest.description !== lifecycleManifest.description
+  ) {
+    fail('registry_catalog_resolver_receipt_manifest_mismatch')
+  }
   if (expected.kind === 'app') {
     if (data.manifest.type !== 'docker-app') fail('registry_catalog_resolver_manifest_kind_mismatch')
-    requireBoundedText(data.installGuide, 'install_guide', 1024 * 1024)
+    const installGuide = requireBoundedText(data.installGuide, 'install_guide', 64 * 1024)
+    if (catalogReceipt.lifecycle.installGuide !== installGuide) {
+      fail('registry_catalog_resolver_receipt_install_guide_mismatch')
+    }
     // App execution consumes only the server-authorized manifest and install guide.
     return {
       allowed: true,
@@ -455,12 +542,14 @@ function validateSuccessData(expected, body) {
       entryId: expected.entryId,
       snapshot: expected.snapshot,
       manifest: data.manifest,
-      installGuide: data.installGuide,
+      installGuide,
+      catalogReceipt,
     }
   }
-  if (data.manifest.type !== 'mcp' && data.manifest.type !== 'http-api') {
+  if (data.manifest.type !== 'mcp') {
     fail('registry_catalog_resolver_manifest_kind_mismatch')
   }
+  if (data.installGuide !== undefined) fail('registry_catalog_resolver_install_guide_forbidden')
   if (!isRecord(data.install) || !isRecord(data.connection)) {
     fail('registry_catalog_resolver_response_invalid')
   }
@@ -473,7 +562,7 @@ function validateSuccessData(expected, body) {
     manifest: data.manifest,
     install: data.install,
     connection: data.connection,
-    ...(data.installGuide !== undefined ? { installGuide: data.installGuide } : {}),
+    catalogReceipt,
   }
 }
 
@@ -544,9 +633,14 @@ async function main() {
     process.stdout.write(`${JSON.stringify(planRegistryCatalogPreExecutionSettlement(input))}\n`)
     return
   }
-  if (command === 'build-receipt') {
+  if (command === 'validate-receipt-candidate') {
     const input = JSON.parse(await readStdin())
-    process.stdout.write(`${JSON.stringify(buildInstalledCatalogReceipt(input))}\n`)
+    process.stdout.write(`${JSON.stringify(validateServerCatalogReceipt(input))}\n`)
+    return
+  }
+  if (command === 'build-receipt-patch') {
+    const input = JSON.parse(await readStdin())
+    process.stdout.write(`${JSON.stringify(buildInstalledCatalogReceiptPatch(input))}\n`)
     return
   }
   if (command === 'resolve-service-uninstall') {
@@ -554,7 +648,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify(resolveServiceUninstallOwnership(input))}\n`)
     return
   }
-  fail('usage: registry-catalog-acquisition.mjs parse-locator|parse-message|evaluate-response|plan-settlement|build-receipt|resolve-service-uninstall')
+  fail('usage: registry-catalog-acquisition.mjs parse-locator|parse-message|evaluate-response|plan-settlement|validate-receipt-candidate|build-receipt-patch|resolve-service-uninstall')
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

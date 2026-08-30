@@ -86,8 +86,9 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
 3. 只有 HTTP 200 且响应通过同一脚本的 `evaluate-response` 复核后才可继续。复核
    输入是 `{ "expected": <request>, "status": <HTTP状态>, "body": <响应JSON> }`。响应的
    kind/sourceId/entryId/snapshot、manifest.id/type 必须一致，App 还必须取得非空 installGuide。
-   `allowed:true` 才是本次执行定义；App 只使用其 manifest/installGuide，忽略任何 install/connection。
-   uninstall 的 manifest/installGuide 必须来自服务端 receipt 解析结果，不能改读当前目录。
+   响应还必须包含服务端生成并校验的完整 `catalogReceipt` candidate。`allowed:true` 才是本次执行
+   定义；App 只使用其 manifest/installGuide/catalogReceipt，忽略任何 install/connection。uninstall 的
+   manifest/installGuide/receipt 必须来自服务端 receipt 解析结果，不能改读当前目录。
 4. 服务端有界拒绝码必须逐字保留：
    `registry_acquisition_invalid_request`、`registry_acquisition_not_found`、
    `registry_acquisition_snapshot_stale`、`registry_acquisition_blocked`、
@@ -122,13 +123,25 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
     "catalogCommit": "<40/64位commit>",
     "catalogPath": "entries/dify",
     "releaseVersion": "<安装版本>",
+    "lifecycle": {
+      "manifest": {
+        "id": "dify",
+        "name": "Dify",
+        "type": "docker-app | mcp",
+        "version": "<安装版本>",
+        "description": "<最多4096字符>"
+      },
+      "installGuide": "<仅App，服务端返回且最多64KiB>"
+    },
     "runtimeServerId": "<仅MCP注册成功后由服务端签发>"
   }
 }
 ```
 
-`catalogReceipt` 是同一 installed-entry 内的最小不可变生命周期收据，不是第二账本。App 安装意图
-已携带无 runtimeServerId 的 receipt；MCP 注册成功后才把服务端返回的 runtimeServerId 原子补入。
+`catalogReceipt` 是同一 installed-entry 内的最小不可变生命周期收据，不是第二账本。UI 意图只带
+snapshot 基线；install/reinstall 成功时必须原样采用 resolver 返回的完整 candidate，禁止 Skill 根据
+snapshot、manifest 或 installGuide 自行构造/扩展 lifecycle。Service 注册成功后只允许在该 candidate
+上补服务端返回的 runtimeServerId。
 
 **状态语义表（六枚举）**——中间态由界面乐观写入、终态由你回写：
 
@@ -179,9 +192,14 @@ parameters:
 - `200` → 回写成功，前端自动刷新，**无需**再手动改文件。
 - `400` → status/sourceId 非法，检查取值。
 - `404 entry_not_found` → 该条中间态记录不存在（界面未写/已被清理）。**不要**重试或伪造记录；跳过并一句话提示用户重发指令即可。
-- **连接失败 / 路由 404（旧客户端无此端点）** → **降级 file-write**（见下）。
+- receipt PATCH 的 `catalog_receipt_*` 400/409 表示候选非法、ownership/CAS/runtime/lifecycle 不一致；
+  不得删字段、重建 receipt 或换 snapshot 重试。App 停止并按失败语义结算；MCP 先回滚刚注册的
+  runtimeServerId，再结算。
+- **连接失败 / 路由 404（旧客户端无此端点）** → 只有不含 receipt 变更的旧 status-only 回写才允许
+  降级 file-write；新增/补全 lifecycle 或 runtimeServerId 的成功回写绝不降级，避免绕过 CAS。
 
-**降级 file-write**（仅终态 PATCH 端点不可用时；目录 resolver 绝无此降级）：读
+**降级 file-write**（仅旧 status-only 终态 PATCH 端点不可用时；receipt 新增/补全和目录 resolver
+绝无此降级）：读
 `installed-entries.json` → 按 `sourceId`+`entryId`+`deviceId` 精确定位那条中间态记录 → **只改
 `status`（保留 `installedAt` 等其余所有字段与其它条目）** → 写回整个文件（界面也写此文件，
 勿覆盖丢失）。来源缺失或存在多条候选时失败关闭，不得按同 ID 猜测。
@@ -206,7 +224,9 @@ parameters:
    - 失败立即捕获输出，进入"失败处理"。
 6. **健康校验（先校验后回写，强制）**：按 installGuide 的验证地址或 manifest.exposes 的 `http://localhost:<port><path>`，`bash` 用 `curl` 轮询（最多 ~2 分钟）确认服务可达。**只有这步通过才算安装成功**——不要仅凭 `docker compose up -d` 无报错就回写 `installed`。
 7. **回写安装记录**（**本技能的核心职责**，按上方「回写安装记录的统一方式」）：
-   - 健康校验通过 → PATCH `status: installed`；未通过/失败 → `status: failed`；重装失败但旧版本仍在运行 → 回 `installed`（见状态语义表）。
+   - 健康校验通过 → 用 `build-receipt-patch` 把 resolver 原样 candidate 与 `status: installed` 组成
+     CAS-safe PATCH；不得本地重建 receipt。未通过/失败 → `status: failed`；重装失败但旧版本仍在
+     运行 → 回 `installed`（见状态语义表）。
    - 成功后无需手动派生服务——后端文件 watcher 检测到 `installed` 后自动派生；重装期间派生始终保留。
 8. **回报用户**：一句话总结结果 + 访问地址（成功）或失败原因 + 排查建议（失败）。
 
@@ -263,13 +283,12 @@ parameters:
    并发更新）。catalog 响应的 `data.runtimeServerId` 是服务端签发的复合 ownership key；不得用
    entryId、显示名或调用方值代替。
 5. **连接校验（先校验后回写，强制）**：看第 3 步返回的 `connectionTest.success`，或单独 `POST /api/mcp/test-connection`（body `{connection}`）确认能连通、能列出工具。**只有校验通过才算安装成功**——不要仅凭 postInstall 命令退出码 0 就回写 `installed`（装了包不等于连得上）。
-6. **回写安装记录**（按「回写安装记录的统一方式」）：连接校验通过后，用脚本 `build-receipt`
-   把 request.kind、request.snapshot 加 `entryId` 与服务端返回的 `runtimeServerId` 组成
-   `catalogReceipt`，与
-   `status: installed` 在同一次
-   精确 PATCH 中写回原 installed-entry；这仍是唯一安装账本。缺 runtimeServerId 或 receipt 回写失败
-   时不得宣布成功，先按精确 runtimeServerId 回滚刚注册的 MCP，再按失败语义结算。连接校验失败
-   → `failed`（重装失败但旧配置仍可用 → 回 `installed`）。
+6. **回写安装记录**（按「回写安装记录的统一方式」）：连接校验通过后，用脚本
+   `build-receipt-patch` 原样接收 resolver 的 catalogReceipt candidate，只在其上补服务端 add 返回的
+   runtimeServerId，并与 `status: installed` 在同一次精确 PATCH 中写回原 installed-entry；禁止从
+   request snapshot/manifest 自建或替换 lifecycle。缺 candidate/runtimeServerId、candidate 被篡改或
+   receipt CAS 回写失败时不得宣布成功，先按精确 runtimeServerId 回滚刚注册的 MCP，再按失败语义
+   结算。连接校验失败 → `failed`（重装失败但旧配置仍可用 → 回 `installed`）。
 7. **回报用户**：总结安装结果 + 发现的工具数（成功）或失败原因摘要（失败）。
 
 **http-api 服务**（manifest.type=`http-api`，无 `install` 字段、界面也无自动化安装动作）：按「回写安装记录的统一方式」维护回写（`installing`→`installed`、`uninstalling`→`uninstalled`/失败回 `installed`），明确告知用户该类服务无本地部署步骤、只是登记可达性。
@@ -310,6 +329,8 @@ parameters:
 | 机器行缺失/畸形/重复 | 无 locator 时不猜写；有 locator 时先强制结算。都禁止从自然语言或本地目录补全 |
 | resolver 400/404/409/连接失败 | 保留真实 `registry_acquisition_*` 与有界 reasons，先强制结算，再停止；禁止 Docker/bash/包管理和同 ID fallback |
 | resolver 200 但身份/快照/manifest/指南不一致 | 视为不可信响应，先强制结算，不执行任何生命周期副作用 |
+| resolver 200 缺失/篡改 catalogReceipt 或 App lifecycle guide 超过 64 KiB | 拒绝执行；禁止本地补建/截断 lifecycle，先强制结算 |
+| receipt PATCH CAS/runtime/lifecycle 冲突 | 禁止修改候选绕过；MCP 回滚注册后结算，App 按失败语义结算 |
 | Human Gate 取消 | 首装回 `failed`，重装/卸载回 `installed`，不得遗留中间态 |
 | docker 未运行 | 提示用户启动 Docker；首装回 `failed`，重装回 `installed` |
 | 端口被占用 | 列出占用进程，建议换端口或停占用，征求用户意见 |
