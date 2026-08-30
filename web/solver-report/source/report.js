@@ -86,7 +86,7 @@
 
   function renderShell() {
     $('#rail-summary').innerHTML =
-      `<span><b>${manifest.counts.chapters}</b>场景</span><span><b>${manifest.counts.screenshots}</b>真机图</span><span><b>${manifest.counts.representativeStabilityPasses}</b>稳定运行</span>`
+      `<span><b>${manifest.counts.chapters}</b>场景</span><span><b>${manifest.counts.decisionTrees}</b>决策树</span><span><b>${manifest.counts.screenshots}</b>真机图</span><span><b>${manifest.counts.representativeStabilityPasses}</b>稳定运行</span>`
     $('#build-id').textContent = manifest.buildId
     const families = ['ALL', ...new Set(manifest.chapters.map((item) => familyLabel(item.problemFamily)))]
     $('#filters').innerHTML = families
@@ -173,6 +173,102 @@
       .join('')
   }
 
+  const ownerLabel = (owner) =>
+    ({ human: '人类确认', agent: 'Agent 推导', shared: '人 + Agent', validator: '独立校核', platform: '平台执行' })[
+      owner
+    ] || owner
+  const kindLabel = (kind) =>
+    ({ context: '决策背景', question: '判断门', action: '执行', check: '校核门', outcome: '结果' })[kind] || kind
+
+  function decisionTreePath(tree) {
+    const nodes = new Map(tree.nodes.map((node) => [node.id, node]))
+    const selected = new Map(tree.edges.filter((edge) => edge.selected).map((edge) => [edge.from, edge]))
+    const path = []
+    const visited = new Set()
+    let current = tree.rootNodeId
+    while (nodes.has(current) && !visited.has(current)) {
+      visited.add(current)
+      path.push(nodes.get(current))
+      current = selected.get(current)?.to
+    }
+    return path
+  }
+
+  function renderTreeNode(node, branch = false) {
+    return `<article class="tree-node ${esc(node.status)}${branch ? ' branch' : ''}" data-tree-node="${esc(node.id)}">
+      <div class="tree-node-top"><span class="tree-owner ${esc(node.owner)}">${esc(ownerLabel(node.owner))}</span><span class="tree-kind">${esc(kindLabel(node.kind))}</span></div>
+      <h3>${esc(node.title)}</h3><p>${esc(node.detail)}</p>
+      <a href="${esc(node.evidenceRef)}">查看关联证据 →</a>
+    </article>`
+  }
+
+  function renderDecisionTree(tree) {
+    const path = decisionTreePath(tree)
+    const nodes = new Map(tree.nodes.map((node) => [node.id, node]))
+    const selectedEdges = new Map(tree.edges.filter((edge) => edge.selected).map((edge) => [edge.from, edge]))
+    const stages = path
+      .map((node, index) => {
+        const nextEdge = selectedEdges.get(node.id)
+        const alternatives = tree.edges
+          .filter((edge) => edge.from === node.id && !edge.selected)
+          .map(
+            (edge) =>
+              `<div class="tree-alternative"><span>${esc(edge.label)}</span>${renderTreeNode(nodes.get(edge.to), true)}</div>`
+          )
+          .join('')
+        return `<div class="tree-stage" role="listitem">${renderTreeNode(node)}${alternatives ? `<div class="tree-alternatives">${alternatives}</div>` : ''}${index < path.length - 1 ? `<div class="tree-connector ${esc(nextEdge.tone)}"><span>${esc(nextEdge.label)}</span><i aria-hidden="true">→</i></div>` : ''}</div>`
+      })
+      .join('')
+    return `<div class="decision-tree" data-decision-tree>
+      <div class="tree-toolbar"><div class="tree-legend" aria-label="决策树职责图例"><span class="human">人类确认</span><span class="agent">Agent 推导</span><span class="validator">独立校核</span><span class="blocked">阻断分支</span></div><div class="tree-actions"><button type="button" data-tree-mode aria-pressed="false">只看实际路径</button><button type="button" data-tree-export>下载 SVG</button></div></div>
+      <div class="tree-scroll" tabindex="0" aria-label="${esc(`场景决策树：${state.chapter.title}`)}"><div class="tree-flow" role="list">${stages}</div></div>
+      <div class="tree-proof"><span>当前实际路径以实线连接；旁路展示系统何时必须补问或阻断。</span><code>PACK ${esc(shortHash(tree.evidenceBindings.scenarioPackSha256))} · RUN ${esc(shortHash(tree.evidenceBindings.runId))}</code></div>
+    </div>`
+  }
+
+  const svgTextLines = (value, max = 18, lines = 3) => {
+    const chars = [...String(value)]
+    const result = []
+    while (chars.length && result.length < lines) result.push(chars.splice(0, max).join(''))
+    if (chars.length) result[result.length - 1] = `${result[result.length - 1].slice(0, -1)}…`
+    return result
+  }
+
+  function downloadDecisionTreeSvg(c) {
+    const path = decisionTreePath(c.decisionTree)
+    const width = Math.max(1200, path.length * 230 + 100)
+    const height = 420
+    const cards = path
+      .map((node, index) => {
+        const x = 50 + index * 230
+        const title = svgTextLines(node.title)
+          .map(
+            (line, lineIndex) =>
+              `<text x="${x + 16}" y="${112 + lineIndex * 22}" font-size="15" font-weight="700" fill="#172238">${esc(line)}</text>`
+          )
+          .join('')
+        const detail = svgTextLines(node.detail, 22, 3)
+          .map(
+            (line, lineIndex) =>
+              `<text x="${x + 16}" y="${194 + lineIndex * 18}" font-size="11" fill="#637089">${esc(line)}</text>`
+          )
+          .join('')
+        const connector =
+          index < path.length - 1
+            ? `<path d="M ${x + 190} 174 H ${x + 222}" stroke="#23b8b2" stroke-width="3"/><path d="M ${x + 216} 168 L ${x + 224} 174 L ${x + 216} 180" fill="none" stroke="#23b8b2" stroke-width="3"/>`
+            : ''
+        return `<g><rect x="${x}" y="64" width="190" height="210" rx="16" fill="#fff" stroke="#dce3ed"/><rect x="${x}" y="64" width="190" height="8" rx="4" fill="${node.status === 'blocked' ? '#d95c63' : '#23b8b2'}"/><text x="${x + 16}" y="94" font-size="11" font-weight="700" fill="#477070">${esc(ownerLabel(node.owner))}</text>${title}${detail}${connector}</g>`
+      })
+      .join('')
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#eef2f7"/><text x="50" y="35" font-size="22" font-weight="800" fill="#172238">${esc(c.title)} · 人 + Agent 决策树</text>${cards}<text x="50" y="316" font-size="13" font-weight="700" fill="#172238">实际证据路径</text><text x="50" y="342" font-size="12" fill="#637089">场景 ${esc(c.scenarioId)} · ${esc(c.decisionTree.evidenceBindings.scenarioPackSha256)}</text><text x="50" y="370" font-size="12" fill="#637089">此 SVG 由验证书中的结构化决策树即时导出；完整旁路与证据链接请在 Web 页面审阅。</text></svg>`
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${c.scenarioId.replace(/[^a-z0-9._-]/gi, '-')}-decision-tree.svg`
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
+  }
+
   function renderChapter() {
     const c = state.chapter
     const tone = statusTone(c.resultStatus)
@@ -188,13 +284,15 @@
         <div class="kpi"><small>问题族</small><strong>${familyLabel(c.problemFamily)}</strong></div>
         <div class="kpi"><small>实际引擎</small><strong>${esc(c.engineId || '独立校核')}</strong></div>
         <div class="kpi"><small>结果 / 校核</small><strong class="status ${tone}">${statusLabel(c.resultStatus)} / ${esc(c.validationVerdict || '不适用')}</strong></div>
+        <div class="kpi"><small>人机决策树</small><strong>${c.decisionTree.nodes.length} 节点 · 证据绑定</strong></div>
         <div class="kpi"><small>真实消息 / 工具</small><strong>${c.counts.rawConversationMessages} / ${c.counts.toolEvents}</strong></div>
-        <div class="kpi"><small>真机截图</small><strong>${c.counts.screenshots} 张 · 2x</strong></div>
+        <div class="kpi"><small>原生真机截图</small><strong>${c.counts.screenshots} 张 · 2x</strong></div>
       </section>
       <section class="section-shell"><div class="section-head"><div><h2>场景故事与意义</h2><p>为什么这个问题具有代表性，以及哪些业务规则决定可行性。</p></div><span class="evidence-tag">PACK ${esc(c.scenarioVersion)} · ${shortHash(c.contentSha256)}</span></div>
         <div class="hero-grid"><div class="validation-card"><small>目标</small><strong>${c.objectives.map(esc).join('；')}</strong></div><div class="validation-card"><small>基线</small><strong>${esc(c.baseline)}</strong></div></div>
         <div class="validation-card" style="margin-top:12px"><small>硬规则</small><strong>${c.constraints.map(esc).join('；')}</strong></div>
       </section>
+      <section class="section-shell decision-tree-section" id="decision-tree"><div class="section-head"><div><h2>人 + Agent 场景决策树</h2><p>从业务确认到交付门禁，展示本次实际路径以及必须补问、拒绝或阻断的旁路。</p></div><span class="evidence-tag">EVIDENCE-BOUND · ${c.decisionTree.nodes.length} NODES</span></div>${renderDecisionTree(c.decisionTree)}</section>
       <section class="section-shell"><div class="section-head"><div><h2>真实多轮对话</h2><p>普通消息逐条来自 messages.jsonl；工具事件来自持久回执，未用离线脚本改写对话。</p></div><span class="evidence-tag">RUN ${shortHash(c.evidence.runId)}</span></div><div class="timeline">${renderTimeline(c)}</div></section>
       <section class="section-shell"><div class="section-head"><div><h2>智能体最终十部分报告</h2><p>十个 section ID、数量和顺序固定；正文由最终消息 Markdown 原样构建。</p></div><span class="evidence-tag">${c.formulaStats.rendered} FORMULAS · HTML+MATHML</span></div><div class="report-grid">${c.sections.map((section) => `<section class="report-part" id="${section.id}"><div class="part-number">${section.number}</div><div class="part-body"><h3>${esc(section.title)}</h3><div class="markdown">${section.html}</div></div></section>`).join('')}</div></section>
       <section class="section-shell"><div class="section-head"><div><h2>专业校核与稳定性</h2><p>求解结果、独立验证、等价 formulation 和重复运行分别留证。</p></div><span class="evidence-tag">${esc(c.stability.policy)}</span></div>
@@ -214,6 +312,13 @@
         })
       })
     $('#chapter [data-open-regression]')?.addEventListener('click', openLatestRegression)
+    $('#chapter [data-tree-mode]')?.addEventListener('click', (event) => {
+      const tree = event.currentTarget.closest('[data-decision-tree]')
+      const pathOnly = tree.classList.toggle('path-only')
+      event.currentTarget.setAttribute('aria-pressed', String(pathOnly))
+      event.currentTarget.textContent = pathOnly ? '显示完整分支' : '只看实际路径'
+    })
+    $('#chapter [data-tree-export]')?.addEventListener('click', () => downloadDecisionTreeSvg(c))
     document.title = `${String(c.scenarioOrder).padStart(2, '0')} · ${c.title} — ${manifest.title}`
     $('#app').setAttribute('aria-busy', 'false')
   }

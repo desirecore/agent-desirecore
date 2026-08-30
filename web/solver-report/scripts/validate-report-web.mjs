@@ -1,5 +1,7 @@
 import { existsSync, globSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   assertPublicText,
   canonical,
@@ -8,6 +10,13 @@ import {
   sha256,
 } from './public-release-policy.mjs'
 
+const codeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const require = createRequire(import.meta.url)
+const Ajv = require('ajv').default
+const ajv = new Ajv({ allErrors: true, strict: true })
+const validateDecisionTreeSchema = ajv.compile(
+  JSON.parse(readFileSync(join(codeRoot, 'decision-tree.schema.json'), 'utf8'))
+)
 const inputRoot = resolve(process.env.SOLVER_REPORT_INPUT_ROOT ?? process.env.BUILDER_ROOT ?? process.cwd())
 const dist = process.env.SOLVER_REPORT_OUTPUT_ROOT ?? join(inputRoot, 'report-web', 'dist')
 const validationFile =
@@ -27,6 +36,12 @@ const caseRunById = new Map(
   globSync(join(inputRoot, 'evidence', '**', 'case-run.json')).map((file) => {
     const data = JSON.parse(readFileSync(file, 'utf8'))
     return [data.runId, { file, data, runDir: join(dirname(file), 'run') }]
+  })
+)
+const packById = new Map(
+  globSync(join(inputRoot, 'scenario-packs', '*', '2.0.0', 'scenario-pack.json')).map((file) => {
+    const pack = JSON.parse(readFileSync(file, 'utf8'))
+    return [pack.manifest.scenarioId, { file, pack }]
   })
 )
 const screenshotPlan = JSON.parse(
@@ -60,6 +75,8 @@ const { attestation: publicReleaseAttestation, sha256: publicReleaseAttestationS
   loadPublicReleaseAttestation(publicAttestationFile, publicEvidenceRoots)
 
 if (manifest.chapters.length !== 24) failures.push({ issue: 'chapter-count', actual: manifest.chapters.length })
+if (manifest.counts.decisionTrees !== 24)
+  failures.push({ issue: 'decision-tree-count', actual: manifest.counts.decisionTrees })
 if (manifest.counts.screenshots !== 174)
   failures.push({ issue: 'screenshot-count', actual: manifest.counts.screenshots })
 const historicalEvidenceContentRootSha256 = sha256(
@@ -105,6 +122,7 @@ if (
   canonical(build.publicEvidenceRoots) !== canonical(manifest.publicEvidenceRoots) ||
   canonical(build.counts) !== canonical(manifest.counts) ||
   build.integrityEntries !== integrity.entries.length ||
+  build.gates?.decisionTrees !== 'pass' ||
   build.gates?.publicReleasePrivacy !== 'pass' ||
   !integrity.entries.some((entry) => entry.path === 'build.json')
 )
@@ -117,6 +135,7 @@ try {
 
 let formulas = 0
 let screenshotCount = 0
+let decisionTreeCount = 0
 for (const index of manifest.chapters) {
   const file = join(dist, index.json)
   const script = join(dist, index.script)
@@ -155,6 +174,135 @@ for (const index of manifest.chapters) {
   }
   formulas += chapter.formulaStats.rendered
   screenshotCount += chapter.media.length
+  const source = caseRunById.get(chapter.evidence.runId)
+  const sourceMessagesFile = source ? join(source.runDir, 'messages.jsonl') : null
+  const sourceSessionFile = source ? join(source.runDir, 'sessions', 'session.jsonl') : null
+  const sourceInvocationsFile = source ? join(source.runDir, 'receipts', 'tool-invocations.jsonl') : null
+  const sourceInvocations = source ? readJsonLines(sourceInvocationsFile) : []
+  const sourceSession = source ? readJsonLines(sourceSessionFile) : []
+  const finishedReceipts = sourceInvocations.filter((item) => item.phase === 'finished' && item.status === 'success')
+  const finishedToolNames = finishedReceipts.map((item) => item.tool_name)
+  const parsedSummaries = sourceSession
+    .filter((event) => event.type === 'tool_use_summary')
+    .map((event) => {
+      try {
+        return { event, summary: JSON.parse(event.data?.summary ?? '') }
+      } catch {
+        return null
+      }
+    })
+    .filter((entry) => entry?.summary && typeof entry.summary === 'object' && !Array.isArray(entry.summary))
+  const solveReceipt = finishedReceipts.find((item) => item.tool_name === 'OptimizationSolve')
+  const validationReceipt = [...finishedReceipts].reverse().find((item) => item.tool_name === 'OptimizationValidate')
+  const ledgerReceipt = [...finishedReceipts].reverse().find((item) => item.tool_name === 'OptimizationEvidenceLedger')
+  const observedSolveSummary = solveReceipt
+    ? typeof solveReceipt.result_provenance?.result_payload_hash === 'string'
+      ? parsedSummaries.find(
+        ({ summary }) => summary.result_payload_hash === solveReceipt.result_provenance?.result_payload_hash
+        )?.summary ?? null
+      : null
+    : null
+  const observedValidationSummary = validationReceipt
+    ? typeof validationReceipt.result_provenance?.validation_report_hash === 'string'
+      ? [...parsedSummaries]
+        .reverse()
+        .find(
+          ({ event, summary }) =>
+            ['pass', 'fail'].includes(summary.verdict) &&
+            event.data?.metadata?.validation_report_hash === validationReceipt.result_provenance?.validation_report_hash
+          )?.summary ?? null
+      : null
+    : null
+  const observedLedgerSummary = ledgerReceipt
+    ? [...parsedSummaries]
+        .reverse()
+        .find(({ summary }) => summary.schema_version === 'solver.optimization-evidence-ledger/v1')?.summary ?? null
+    : null
+  const tree = chapter.decisionTree
+  const treeNodes = new Map(tree?.nodes?.map((node) => [node.id, node]) ?? [])
+  const packEntry = packById.get(index.scenarioId)
+  if (
+    !validateDecisionTreeSchema(tree) ||
+    tree?.schemaVersion !== 'solver.human-agent-decision-tree/v1' ||
+    treeNodes.size !== tree?.nodes?.length ||
+    !treeNodes.has(tree?.rootNodeId) ||
+    tree?.edges?.some((edge) => !treeNodes.has(edge.from) || !treeNodes.has(edge.to)) ||
+    !packEntry ||
+    tree?.evidenceBindings?.scenarioPackSha256 !== sha256(readFileSync(packEntry.file)) ||
+    tree?.evidenceBindings?.runId !== chapter.evidence.runId ||
+    tree?.evidenceBindings?.sourceMessagesSha256 !== chapter.evidence.sourceMessagesSha256 ||
+    tree?.evidenceBindings?.sourceSessionSha256 !== chapter.evidence.sourceSessionSha256 ||
+    tree?.evidenceBindings?.sourceToolInvocationsSha256 !== chapter.evidence.sourceToolInvocationsSha256 ||
+    tree?.evidenceBindings?.optimizationSpecSha256 !== chapter.evidence.optimizationSpecSha256 ||
+    tree?.evidenceBindings?.resultPayloadSha256 !== chapter.evidence.resultPayloadSha256 ||
+    tree?.evidenceBindings?.validationReportSha256 !== chapter.evidence.validationReportSha256 ||
+    !source ||
+    tree?.evidenceBindings?.sourceMessagesSha256 !== sha256(readFileSync(sourceMessagesFile)) ||
+    tree?.evidenceBindings?.sourceSessionSha256 !== sha256(readFileSync(sourceSessionFile)) ||
+    tree?.evidenceBindings?.sourceToolInvocationsSha256 !== sha256(readFileSync(sourceInvocationsFile)) ||
+    source.data.status !== 'passed' ||
+    tree?.observed?.runStatus !== source.data.status ||
+    !['optimization', 'validation', 'recovery'].includes(tree?.observed?.workflowKind) ||
+    (tree?.observed?.workflowKind === 'optimization' &&
+      (!finishedToolNames.includes('OptimizationSolve') ||
+        !finishedToolNames.includes('OptimizationValidate') ||
+        !observedSolveSummary ||
+        !observedValidationSummary ||
+        tree.observed.solveStatus !== observedSolveSummary.status ||
+        tree.observed.validationVerdict !== observedValidationSummary.verdict ||
+        !solveReceipt?.result_provenance?.optimization_spec_hash ||
+        tree.evidenceBindings.optimizationSpecSha256 !== solveReceipt.result_provenance.optimization_spec_hash ||
+        tree.evidenceBindings.resultPayloadSha256 !== solveReceipt?.result_provenance?.result_payload_hash ||
+        !validationReceipt?.result_provenance?.validation_report_hash ||
+        tree.evidenceBindings.validationReportSha256 !== validationReceipt?.result_provenance?.validation_report_hash ||
+        !tree.evidenceBindings.resultPayloadSha256 ||
+        chapter.resultStatus !== tree.observed.solveStatus ||
+        chapter.validationVerdict !== tree.observed.validationVerdict)) ||
+    (tree?.observed?.workflowKind === 'validation' &&
+      (finishedToolNames.includes('OptimizationCompile') ||
+        finishedToolNames.includes('OptimizationSolve') ||
+        tree.observed.solveStatus !== null ||
+        !finishedToolNames.includes('OptimizationValidate') ||
+        !observedValidationSummary ||
+        tree.observed.validationVerdict !== observedValidationSummary.verdict ||
+        !validationReceipt?.result_provenance?.validation_report_hash ||
+        tree.evidenceBindings.validationReportSha256 !== validationReceipt?.result_provenance?.validation_report_hash ||
+        treeNodes.has('model') ||
+        chapter.resultStatus !== tree.observed.validationVerdict)) ||
+    (tree?.observed?.workflowKind === 'recovery' &&
+      (finishedToolNames.includes('OptimizationCompile') ||
+        finishedToolNames.includes('OptimizationSolve') ||
+        finishedToolNames.includes('OptimizationValidate') ||
+        tree.observed.solveStatus !== null ||
+        tree.observed.validationVerdict !== null ||
+        !finishedToolNames.includes('OptimizationEvidenceLedger') ||
+        !observedLedgerSummary ||
+        !ledgerReceipt?.result_provenance?.result_payload_hash ||
+        tree.evidenceBindings.resultPayloadSha256 !== ledgerReceipt?.result_provenance?.result_payload_hash ||
+        treeNodes.has('model') ||
+        !tree.evidenceBindings.resultPayloadSha256 ||
+        chapter.resultStatus !== 'recovered'))
+  ) {
+    failures.push({ scenarioId: index.scenarioId, issue: 'decision-tree-contract-or-evidence-binding' })
+  } else {
+    const selectedEdges = tree.edges.filter((edge) => edge.selected)
+    const selectedByFrom = new Map()
+    for (const edge of selectedEdges) selectedByFrom.set(edge.from, [...(selectedByFrom.get(edge.from) ?? []), edge])
+    let cursor = tree.rootNodeId
+    const visited = new Set()
+    while (selectedByFrom.get(cursor)?.length === 1 && !visited.has(cursor)) {
+      visited.add(cursor)
+      cursor = selectedByFrom.get(cursor)[0].to
+    }
+    if (
+      cursor !== 'outcome' ||
+      visited.size !== selectedEdges.length ||
+      [...selectedByFrom.values()].some((outgoing) => outgoing.length !== 1) ||
+      tree.nodes.some((node) => node.id !== tree.rootNodeId && !tree.edges.some((edge) => edge.to === node.id))
+    )
+      failures.push({ scenarioId: index.scenarioId, issue: 'decision-tree-selected-path' })
+    else decisionTreeCount += 1
+  }
   for (const image of chapter.media) {
     const original = join(dist, image.original)
     if (!existsSync(original) || sha256(readFileSync(original)) !== image.sha256) {
@@ -165,10 +313,9 @@ for (const index of manifest.chapters) {
         failures.push({ scenarioId: index.scenarioId, issue: 'thumbnail-missing', path: thumb })
     }
   }
-  const source = caseRunById.get(chapter.evidence.runId)
   if (!source) failures.push({ scenarioId: index.scenarioId, issue: 'source-run-missing' })
   else {
-    const raw = readJsonLines(join(source.runDir, 'messages.jsonl')).filter((item) =>
+    const raw = readJsonLines(sourceMessagesFile).filter((item) =>
       ['user', 'assistant'].includes(item.role)
     )
     const projected = chapter.timeline.filter((item) => item.kind === 'message')
@@ -194,6 +341,7 @@ for (const index of manifest.chapters) {
 }
 
 if (screenshotCount !== 174) failures.push({ issue: 'chapter-screenshot-sum', actual: screenshotCount })
+if (decisionTreeCount !== 24) failures.push({ issue: 'chapter-decision-tree-sum', actual: decisionTreeCount })
 for (const entry of integrity.entries) {
   const file = join(dist, entry.path)
   if (!existsSync(file)) failures.push({ issue: 'integrity-file-missing', path: entry.path })
@@ -209,6 +357,7 @@ for (const required of [
   'assets/report.js',
   'assets/katex.min.css',
   'data/manifest.js',
+  'data/decision-tree.schema.json',
   'data/latest-platform-regression.json',
 ]) {
   if (!existsSync(join(dist, required))) failures.push({ issue: 'required-asset', path: required })
@@ -220,6 +369,7 @@ const report = {
   buildId: manifest.buildId,
   chapters: manifest.chapters.length,
   screenshots: screenshotCount,
+  decisionTrees: decisionTreeCount,
   formulas,
   integrityEntries: integrity.entries.length,
   bytes: globSync(join(dist, '**', '*'))

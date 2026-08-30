@@ -88,7 +88,7 @@ body {
 }
 .rail-summary {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 6px;
   margin-bottom: 14px;
 }
@@ -355,7 +355,7 @@ body {
 }
 .kpis {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 10px;
   margin: 20px 0;
 }
@@ -562,6 +562,248 @@ body {
   display: block;
   margin-top: 7px;
   overflow-wrap: anywhere;
+}
+.decision-tree-section {
+  overflow: hidden;
+  scroll-margin-top: 82px;
+  background:
+    radial-gradient(circle at 10% 0, rgba(35, 184, 178, 0.1), transparent 30%),
+    #fff;
+}
+.tree-toolbar,
+.tree-proof {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.tree-toolbar {
+  margin-bottom: 16px;
+}
+.tree-legend,
+.tree-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.tree-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 9px;
+}
+.tree-legend span::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cyan);
+}
+.tree-legend .human::before {
+  background: var(--violet);
+}
+.tree-legend .agent::before {
+  background: var(--cyan);
+}
+.tree-legend .validator::before {
+  background: var(--green);
+}
+.tree-legend .blocked::before {
+  background: var(--red);
+}
+.tree-actions button {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 11px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.tree-actions button:hover,
+.tree-actions button:focus-visible {
+  border-color: #7ecac1;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(35, 184, 178, 0.12);
+}
+.tree-scroll {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding: 8px 4px 18px;
+  scrollbar-color: #aab8ca #edf1f6;
+  outline: none;
+}
+.tree-scroll:focus-visible {
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 3px rgba(35, 184, 178, 0.24);
+}
+.tree-flow {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 200px;
+  align-items: start;
+  gap: 52px;
+  width: max-content;
+  min-width: 100%;
+}
+.tree-stage {
+  position: relative;
+  min-width: 0;
+}
+.tree-node {
+  position: relative;
+  min-height: 224px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-top: 5px solid var(--cyan);
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(24, 42, 80, 0.08);
+}
+.tree-node.neutral {
+  border-top-color: var(--violet);
+}
+.tree-node.guard {
+  border-top-color: var(--amber);
+}
+.tree-node.blocked {
+  border-top-color: var(--red);
+  background: #fff9f8;
+}
+.tree-node-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 7px;
+}
+.tree-owner,
+.tree-kind {
+  border-radius: 999px;
+  padding: 4px 7px;
+  font-size: 8px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.tree-owner {
+  background: #e9f8f5;
+  color: #177369;
+  font-weight: 800;
+}
+.tree-owner.human {
+  background: #f0edff;
+  color: #6251bd;
+}
+.tree-owner.validator {
+  background: #eaf8f0;
+  color: #247b53;
+}
+.tree-owner.platform {
+  background: #eef2f8;
+  color: #4d627e;
+}
+.tree-kind {
+  background: var(--soft);
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.tree-node h3 {
+  margin: 14px 0 9px;
+  font-size: 14px;
+  line-height: 1.42;
+}
+.tree-node p {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.65;
+}
+.tree-node a {
+  position: absolute;
+  left: 15px;
+  bottom: 14px;
+  color: #167f75;
+  font-size: 9px;
+  text-decoration: none;
+}
+.tree-connector {
+  position: absolute;
+  z-index: 2;
+  left: calc(100% + 5px);
+  top: 74px;
+  width: 42px;
+  color: #2a9289;
+  text-align: center;
+}
+.tree-connector span {
+  display: block;
+  width: 88px;
+  margin-left: -23px;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.25;
+}
+.tree-connector i {
+  display: block;
+  font-size: 25px;
+  font-style: normal;
+  line-height: 1;
+}
+.tree-connector.guard {
+  color: var(--amber);
+}
+.tree-connector.success {
+  color: var(--green);
+}
+.tree-alternatives {
+  position: relative;
+  margin-top: 46px;
+}
+.tree-alternatives::before {
+  content: '';
+  position: absolute;
+  left: 24px;
+  bottom: 100%;
+  width: 1px;
+  height: 32px;
+  background: repeating-linear-gradient(to bottom, var(--red) 0 4px, transparent 4px 8px);
+}
+.tree-alternative > span {
+  display: inline-block;
+  margin: 0 0 7px 10px;
+  border-radius: 999px;
+  padding: 4px 7px;
+  background: #fff1ec;
+  color: #a34f43;
+  font-size: 8px;
+}
+.tree-node.branch {
+  min-height: 190px;
+  border-style: dashed;
+  box-shadow: none;
+}
+.decision-tree.path-only .tree-alternatives {
+  display: none;
+}
+.tree-proof {
+  align-items: flex-start;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+.tree-proof code {
+  color: #477070;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 .gallery {
   display: grid;
@@ -988,6 +1230,62 @@ body {
   .hero-grid,
   .validation-grid {
     grid-template-columns: 1fr;
+  }
+  .decision-tree-section {
+    padding: 22px 16px;
+  }
+  .tree-toolbar,
+  .tree-proof {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .tree-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .tree-actions button {
+    min-height: 44px;
+  }
+  .tree-scroll {
+    overflow-x: hidden;
+    padding-inline: 1px;
+  }
+  .tree-flow {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 0;
+    gap: 0;
+  }
+  .tree-stage {
+    width: 100%;
+  }
+  .tree-node {
+    min-height: 190px;
+  }
+  .tree-connector {
+    position: static;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    padding: 9px 0;
+  }
+  .tree-connector span {
+    width: auto;
+    margin: 0 0 2px;
+  }
+  .tree-connector i {
+    transform: rotate(90deg);
+  }
+  .tree-alternatives {
+    margin: 30px 0 4px 24px;
+  }
+  .tree-node.branch {
+    min-height: 176px;
+  }
+  .tree-proof code {
+    text-align: left;
   }
   .kpis {
     grid-template-columns: repeat(2, 1fr);

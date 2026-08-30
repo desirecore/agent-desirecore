@@ -40,6 +40,8 @@ manifest = json.loads((root / "data" / "manifest.json").read_text(encoding="utf-
 build = json.loads((root / "build.json").read_text(encoding="utf-8"))
 if build.get("gates", {}).get("publicReleasePrivacy") != "pass":
     failures.append({"path": "build.json", "issue": "public-release-privacy-gate"})
+if build.get("gates", {}).get("decisionTrees") != "pass":
+    failures.append({"path": "build.json", "issue": "decision-tree-gate"})
 if build.get("publicReleaseAttestationSha256") != manifest.get("publicReleaseAttestationSha256"):
     failures.append({"path": "build.json", "issue": "public-release-attestation-mismatch"})
 if (
