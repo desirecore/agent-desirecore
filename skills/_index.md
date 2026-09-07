@@ -1,6 +1,6 @@
 # 技能索引 — DesireCore
 
-> create-agent、update-agent、delete-agent、discover-agent 已迁移至全局技能层（`~/.desirecore/skills/`），
+> create-agent、update-agent、delete-agent、discover-agent 已迁移至全局技能层（`<根目录>/skills/`），
 > 由 `syncBuiltinSkills()` 捆绑源自动同步，不再随 Agent 仓库分发。
 
 ## 元技能（Meta-Skills）
@@ -14,7 +14,7 @@
 | 技能 ID | 描述 | 风险 |
 |---------|------|------|
 | [task-management](./task-management/SKILL.md) | 任务创建、分配、跟踪与多 Agent 编排 | low |
-| [app-install-manager](./app-install-manager/SKILL.md) | 应用与服务目录的 docker-app 安装/卸载/启停 + 安装状态回写 | high |
+| [app-install-manager](./app-install-manager/SKILL.md) | 经目录快照 resolver 授权的 docker-app / 服务安装、卸载、启停与状态回写 | high |
 
 ## 技能协作关系
 
@@ -27,7 +27,7 @@
 │  └─────────────┘  └──────────────────┘       │
 └──────────────────────────────────────────────┘
 
-            全局技能（~/.desirecore/skills/）
+            全局技能（<根目录>/skills/）
 ┌──────────────────────────────────────────────┐
 │  ┌─────────────┐  ┌─────────────┐            │
 │  │ create-agent │  │ delete-agent │            │
