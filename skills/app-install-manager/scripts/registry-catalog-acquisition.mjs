@@ -321,11 +321,11 @@ function validateLifecycleManifest(value, kind, entryId, releaseVersion) {
   if (typeof value.description !== 'string' || value.description.length > 4096 || value.description.includes('\0')) {
     fail('registry_catalog_receipt_lifecycle_description_invalid')
   }
-  const expectedType = kind === 'app' ? 'docker-app' : 'mcp'
-  if (id !== entryId || version !== releaseVersion || value.type !== expectedType) {
+  const typeMatches = kind === 'app' ? ['docker-app', 'native-app'].includes(value.type) : value.type === 'mcp'
+  if (id !== entryId || version !== releaseVersion || !typeMatches) {
     fail('registry_catalog_receipt_lifecycle_identity_mismatch')
   }
-  return { id, name, type: expectedType, version, description: value.description }
+  return { id, name, type: value.type, version, description: value.description }
 }
 
 /** Validate, but never synthesize, the server-issued immutable lifecycle receipt candidate. */
@@ -562,6 +562,7 @@ function validateSuccessData(expected, body) {
   }
   const lifecycleManifest = catalogReceipt.lifecycle.manifest
   if (
+    data.manifest.type !== lifecycleManifest.type ||
     data.manifest.name !== lifecycleManifest.name ||
     data.manifest.version !== lifecycleManifest.version ||
     data.manifest.description !== lifecycleManifest.description
@@ -569,7 +570,7 @@ function validateSuccessData(expected, body) {
     fail('registry_catalog_resolver_receipt_manifest_mismatch')
   }
   if (expected.kind === 'app') {
-    if (data.manifest.type !== 'docker-app') fail('registry_catalog_resolver_manifest_kind_mismatch')
+    if (!['docker-app', 'native-app'].includes(data.manifest.type)) fail('registry_catalog_resolver_manifest_kind_mismatch')
     const installGuide = requireBoundedText(data.installGuide, 'install_guide', 64 * 1024)
     if (catalogReceipt.lifecycle.installGuide !== installGuide) {
       fail('registry_catalog_resolver_receipt_install_guide_mismatch')
