@@ -101,6 +101,23 @@ function success(expected, overrides = {}) {
   }
 }
 
+test('原生应用保持 App 收据与原始 type，禁止转成内部服务或混用 Docker 收据', () => {
+  const expected = request()
+  const body = success(expected)
+  body.data.manifest.type = 'native-app'
+  body.data.catalogReceipt.lifecycle.manifest.type = 'native-app'
+  const accepted = evaluateRegistryCatalogResolverResult(expected, 200, body)
+  assert.equal(accepted.allowed, true)
+  assert.equal(accepted.kind, 'app')
+  assert.equal(accepted.catalogReceipt.lifecycle.manifest.type, 'native-app')
+  const patch = buildInstalledCatalogReceiptPatch({ sourceId: expected.sourceId, entryId: expected.entryId, operationId: operationA, catalogReceipt: accepted.catalogReceipt })
+  assert.equal(patch.catalogReceipt.kind, 'app')
+  assert.equal(patch.catalogReceipt.runtimeServerId, undefined)
+  assert.throws(() => buildInstalledCatalogReceiptPatch({ sourceId: expected.sourceId, entryId: expected.entryId, operationId: operationA, catalogReceipt: accepted.catalogReceipt, runtimeServerId: 'internal-tool' }), /forbidden/)
+  body.data.catalogReceipt.lifecycle.manifest.type = 'docker-app'
+  assert.throws(() => evaluateRegistryCatalogResolverResult(expected, 200, body), /manifest_mismatch/)
+})
+
 test('missing, duplicate, and malformed machine lines fail closed', () => {
   assert.throws(() => parseRegistryCatalogAcquisitionMessage('请安装 Same ID'), /machine_line_missing/)
   assert.throws(

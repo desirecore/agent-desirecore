@@ -1,7 +1,7 @@
 ---
 name: 应用安装管理
-description: 经目录快照或已安装生命周期收据 resolver 授权后安装/卸载/启停 docker-app 与 mcp/http-api 服务（docker-app：解析 manifest/installGuide → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：使用 resolver 返回的 install/connection → 注册到 Agent → 连接验证 → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
-version: "1.3.0"
+description: 经目录快照或已安装生命周期收据 resolver 授权后安装/卸载/启停 docker-app、native-app 原生应用与 mcp/http-api 服务（docker-app：解析 manifest/installGuide → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：使用 resolver 返回的 install/connection → 注册到 Agent → 连接验证 → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
+version: "1.4.0"
 type: procedural
 risk_level: high
 status: enabled
@@ -9,14 +9,14 @@ disable-model-invocation: true
 tags: [installation, docker, mcp, registry, app-management]
 metadata:
   author: desirecore
-  updated_at: "2026-08-31"
+  updated_at: "2026-09-18"
 ---
 
 # app-install-manager 技能
 
 ## L0：一句话摘要
 
-应用/服务生命周期执行者：把目录里的 docker-app 与 mcp/http-api 服务真正装起来/卸下去，并把真实结果回写到安装记录，让"应用与服务"界面反映真实状态。
+应用/服务生命周期执行者：把目录里的 docker-app、native-app 原生应用与 mcp/http-api 服务真正装起来/卸下去，并把真实结果回写到安装记录，让"应用与服务"界面反映真实状态。
 
 ## L1：概述与使用场景
 
@@ -25,7 +25,8 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
 （你）完成**。后端会监听安装记录文件：在状态变为 `installed` 后自动派生 docker-app 暴露的服务，
 在中间态保留既有派生，仅在终态（`failed`/`uninstalled`/条目移除）清理派生。
 
-覆盖两类目标：
+覆盖三类目标：
+- **native-app**：DesireCore Control 等宿主机原生应用，按固定制品与安装指南安装；只供外部客户端使用的 MCP 不注册到本 Agent。
 - **docker-app**：Dify / n8n / RagFlow 等，走 docker compose 部署。
 - **mcp / http-api 服务**：MCP 服务器（按 registry 的 `install` 字段安装 + 注册到 Agent）与 HTTP API 服务（仅登记安装记录，无自动化部署动作）。
 
@@ -106,7 +107,7 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
 {
   "entryId": "dify",
   "sourceId": "registry:official",
-  "type": "docker-app | mcp | http-api",
+  "type": "docker-app | native-app | mcp | http-api",
   "deviceId": "<设备ID>",
   "deviceName": "<设备名>",
   "version": "<版本>",
@@ -220,7 +221,7 @@ parameters:
 
 1. **解析机器消息并调用 resolver**：严格执行“执行前协议”。action 与 deviceId 只认 operation；
    `entryId`、`type`、版本、端口、exposes 和安装步骤只认复核后的服务端结果。manifest.type 不是
-   `docker-app` 时改走下方服务流程；身份或类型不一致立即停止。
+   `docker-app` 时必须按准确类型路由：`native-app` 走原生应用流程；只有 `mcp`/`http-api` 才走服务流程。身份或类型不一致立即停止。
 2. **读取本次授权定义**：从 resolver 返回的 manifest 读取 `install.requirements`（docker/内存/
    磁盘/ports）与 exposes；只把 resolver 返回的 installGuide 作为部署步骤与验证地址。不得从
    AgentFS 或其它目录补读/覆盖同 ID 定义。
@@ -256,6 +257,19 @@ parameters:
    - **成功**（容器确已停止/删除）→ PATCH `status: uninstalled`。后端 watcher 据此清理派生服务与 per-service Skill。
    - **失败**（容器未能停止/删除，应用仍在运行）→ PATCH `status: installed`，向用户说明卸载失败原因。**切勿**留在 `uninstalling`（界面卸载按钮会禁用，用户被卡住直至 stale 超时）。
 5. 回报用户。
+
+### native-app 原生应用安装、升级与卸载
+
+原生应用属于 App，不是本 Agent 的 MCP 工具。**DesireCore Control 是外部智能体控制 DesireCore 的独立应用；即使它向外暴露 MCP，也绝不调用内部 `/api/mcp/install` 或 `/api/agents/desirecore/mcp-servers` 注册它。** 不改写 Agent 配置，不创建自启动项，不跟随 DesireCore 启停，不把宿主机 CDP 放进 Docker。
+
+1. 执行前协议与 Human Gate 完全沿用 App 流程。先调用 resolver 并用 `evaluate-response` 复核，再进行任何环境探测或包管理操作。manifest.type 与 lifecycle.manifest.type 必须同为 `native-app`，candidate.kind 为 `app`，不接受 runtimeServerId。
+2. 新装/升级只认复核后 manifest 的 `install.method=native-node`、`requirements.node`、目标设备、固定 Release URL/ref/SHA-256 和 installGuide。检查宿主机 Node 版本、可写安装目录、磁盘、默认管理端口；不要求 Docker。缺乏不可变制品或不支持原生应用的客户端时先结算再停止，不改写 type 兼容旧客户端。
+3. 在用户批准的独立应用目录按 installGuide 下载、**先核对 SHA-256 再安装**。版本、启动命令与目录绑定到该安装，不执行浮动 latest，不复用其他应用/实例目录。升级前保留旧版；新包验证失败时恢复可用旧版并按既有重装语义回写。
+4. 使用 installGuide 的隔离安装自检验证包、版本及本机 HTTP 管理页；不要为了安装验证读取真实 DesireCore 实例、截图或运行模型。**安装成功不等于持续运行**：验证进程正常退出后可回写 installed，运行态保持 stopped/unknown。用户另行请求启动时再启动。`--allow-control`、外部隧道、真实 OpenAI key 均需独立明确授权；安装本身不启用它们。
+5. 自检通过后用 `build-receipt-patch` 原样保存服务器 candidate，`kind=app`、`type=native-app`，按精确 operationId 回写 installed。不要派生内部 MCP/HTTP 服务，不以登记工具数作为安装成功条件。
+6. 卸载只使用原安装 receipt 的 installGuide；确认后停止准确的自有应用进程、卸载该应用的包。不得按进程名批量终止 Node、其他 tunnel-client 或 DesireCore，也不得删除 DesireCore 数据。凭据与用户配置默认保留，删除需另行确认。卸载成功回 uninstalled；失败但仍可用回 installed，不能遗留中间态。
+
+原生应用启动/停止同样要求精确安装身份和原生命周期定义，通过用户批准的独立终端运行。状态改变不伪造安装/升级事实，管理页用系统浏览器打开；已配置的默认端口被占用时先停止并说明，不悄悄换端口导致“我的应用”指向别处。
 
 ### mcp / http-api 服务安装流程
 
@@ -334,7 +348,7 @@ parameters:
 
 ### 启动 / 停止 / 重启
 
-收到"启动/停止/重启 {应用}"（docker-app）不走 catalog acquisition envelope：它只能以资源管理面
+收到"启动/停止/重启 {应用}"（docker-app / native-app）不走 catalog acquisition envelope：它只能以资源管理面
 已经精确选中的 sourceId+entryId+deviceId 和实例级生命周期定义执行。缺精确实例或定义时停止，
 不得用名称、本地 Registry 同 ID 条目或当前 catalog 猜容器。完成高风险确认后才用 `bash` 执行
 该实例定义允许的 start/stop/restart；这类运行态切换不改变 installed-entry 的 install 状态。
