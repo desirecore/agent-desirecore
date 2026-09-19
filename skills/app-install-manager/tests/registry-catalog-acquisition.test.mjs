@@ -666,6 +666,16 @@ test('首装观察示例复用 resolver material，不将 install 改为 manage'
   assert.match(recovery, /响应未知不能如此处理/)
 })
 
+test('卸载不扩大到未知父目录，证据必须实际存在', async () => {
+  const skill = await readFile(skillPath, 'utf8')
+  const api = await readFile(join(here, '..', 'references', 'recording-api.md'), 'utf8')
+  assert.match(skill, /不能因为位于同一前缀就递归清理父目录/)
+  assert.match(skill, /非递归删除，非空就保留/)
+  assert.match(api, /只检查默认用户数据路径不能证明前缀内没有数据/)
+  assert.match(api, /不能自行编造/)
+  assert.match(api, /已用 Write\/执行工具保存的核验报告路径/)
+})
+
 test('Skill contract has no fixed official/local Registry fallback and resolves before execution', async () => {
   const skill = await readFile(join(here, '..', 'references', 'legacy-services.md'), 'utf8')
   assert.doesNotMatch(skill, /registry\/official\/entries/)
