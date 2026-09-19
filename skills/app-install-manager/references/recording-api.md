@@ -6,21 +6,18 @@
 
 API base 使用当前会话已确认的活动 Agent Service；不要猜固定端口。`deviceId=local` 指该 Agent Service 主机，不一定是界面所在电脑。远程设备使用已授权的现有设备执行工具；接口接受设备定位不代表它验证了远程证据。身份/位置不清楚就停止。
 
-通过已有 HttpRequest 调用 `POST /api/registry/acquisitions/resolve`，body 为 `ApplicationManagement` 原对象：
+通过已有 HttpRequest 调用 `POST /api/registry/acquisitions/resolve`，body 为当前请求的 `ApplicationManagement` 原对象。不要用通用示例覆盖本次 action。
 
-```json
-{
-  "protocol": "application-observation-v1",
-  "sourceId": "registry:official",
-  "entryId": "desirecore-control",
-  "deviceId": "local",
-  "action": "manage"
-}
-```
+| 用户操作 | 读取资料的 action | snapshot 来源 |
+| --- | --- | --- |
+| 首装或升级到指定版本 | install / update | 该次市场请求的完整固定 snapshot |
+| 管理或卸载已登记应用 | manage / uninstall | 不传，使用历史安装记录 |
+
+首次安装尚未登记，不能调用 manage 来代替 install。
 
 `action=install|update` 必须加上由精确目录条目取得的 `snapshot`：schemaVersion、catalogSourceId、完整 catalogCommit、catalogPath、releaseVersion，及存在时的 contentRef/contentSha256。只允许明确固定版本，不填写 latest，不自行拼下载地址。`action=uninstall|manage` 不传 snapshot，服务端读取原安装资料。
 
-成功 `data` 包含 `material`、`expectedRevision`、`manifest`、`installGuide` 和 `record`。读取不写账本、不执行软件、不代替审批。复用返回的 material，不复制整份指南进提交请求。服务端内部复核不需要模型重复读全部目录。
+成功 `data` 包含 `material`、`expectedRevision`、`manifest`、`installGuide` 和 `record`。保留成功响应供最终提交使用，不在安装后重新构造 material。读取不写账本、不执行软件、不代替审批。复用返回的 material，不复制整份指南进提交请求。服务端内部复核不需要模型重复读全部目录。
 
 目录的无关条目更新不替换选定版本；资料必须在受信分支可达，当前目标条目仍允许获取。下架/撤回可以阻止新装，原安装的 manage/uninstall 使用历史指南，不依赖目录在线。历史安装缺乏维护资料时明确报告，不能用同名最新指南猜卸载命令。
 
@@ -32,25 +29,21 @@ API base 使用当前会话已确认的活动 Agent Service；不要猜固定端
 
 ## 提交观察
 
-`PATCH /api/installed-entries/<entryId>/<deviceId>`，路径段应正常 URL 编码，body：
+`PATCH /api/installed-entries/<entryId>/<deviceId>`，路径段应正常 URL 编码。以下为请求对象的构造关系，不是要求运行一份新脚本；将实际值交给 HttpRequest 的 body：
 
-```json
-{
-  "material": { "protocol": "application-observation-v1", "sourceId": "registry:official", "entryId": "desirecore-control", "deviceId": "local", "action": "manage" },
-  "expectedRevision": "使用此次读取返回的修订值",
-  "requestId": "为本次提交生成一个 UUID，重试保持不变",
-  "deviceName": "本机",
-  "observation": {
-    "result": "present",
-    "observedAt": "实际核验时取得的 ISO 时间",
-    "location": "实际核验的安装目录或部署位置",
-    "evidenceRefs": ["当前工具执行结果或已有会话日志的可追溯引用"],
-    "notes": "可选的简短维护信息，不含秘密或自动执行指令"
-  }
+```javascript
+const body = {
+  material: resolution.data.material,
+  expectedRevision: resolution.data.expectedRevision,
+  requestId, // 本次提交 UUID；响应未知时保留原 ID 和完整正文。
+  deviceName,
+  observation: { result, observedAt, location, evidenceRefs, notes }
 }
 ```
 
-示例中的占位文字不能直接提交。首次安装前没有精确记录时，expectedRevision 为服务端返回的 `none`。observedAt 由实际观察决定；recordedAt 由服务端记录，不要把任务开始时间当核验时间。版本来自固定资料，只有实际匹配时才提交。
+`resolution` 必须是这次成功的资料读取响应。**material 整体原样复用，包括 action 与完整 snapshot；首装完成后仍是 install，不能改为 manage 或删掉 snapshot。** action 表示资料来源，不是把“安装阶段”改成“管理阶段”的状态字段。
+
+其余变量使用实际值：result 仅 present/absent，observedAt 为核验时取得的 ISO 时间，location 为实际安装/部署位置，evidenceRefs 为已有工具或会话证据引用数组，notes 是可选简短维护说明。不含秘密，不复制安装指南。首次安装前没有精确记录时，expectedRevision 为服务端返回的 `none`。observedAt 由实际观察决定；recordedAt 由服务端记录，不要把任务开始时间当核验时间。版本来自固定资料，只有实际匹配时才提交。
 
 限制：location 最多 2048 字符、不能含换行/NUL；evidenceRefs 1–8 个，每项最多 512 字符；notes 最多 2000 字符。不填 runtimeStatus、operationId、pending 字段或 catalogReceipt。证据引用由 Agent 报告，服务端校验结构和记录一致性，不声称验证引用内容或软件真实安全。
 

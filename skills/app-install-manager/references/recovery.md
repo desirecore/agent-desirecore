@@ -8,6 +8,7 @@
 | 下载摘要不符 | 不安装，不换来源绕过；报告并等待明确选择 |
 | 应用已安装，PATCH 失败/响应丢失 | 重读精确记录，必要时原 requestId＋原 body 重试记账；不重新安装 |
 | 卸载完成但 PATCH 失败 | 先确认已移除，再补记；不再次清理用户目录 |
+| 首装误用 manage，明确返回 historical-material-unavailable | 重读确认 record=null 且 revision 未变；保留软件，改用原成功 resolve 的完整 data.material，以新提交 ID 补记。只有确认原请求被拒且未落盘才允许修正正文；响应未知不能如此处理 |
 | application_revision_conflict | 重新读记录和软件现状；不拿旧证据只替换 expectedRevision |
 | application_request_id_conflict | 同 ID 参数不一致，停止；不能自动换 ID 掩盖错误 |
 | application_legacy_source_unresolved | 旧记录来源不明确，不能静默认领为官方应用 |
