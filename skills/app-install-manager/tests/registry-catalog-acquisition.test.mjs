@@ -640,8 +640,22 @@ test('Service uninstall authorizes only exact active service receipt and runtime
   }).deleteAllowed, false)
 })
 
+test('Skill-first 正文短而完整、按需提供既有 HTTP 工具、不加载旧 App 状态机', async () => {
+  const text = await readFile(skillPath, 'utf8')
+  assert.ok(text.split('\n').length <= 60)
+  assert.match(text, /disable-model-invocation: true/)
+  assert.match(text, /tools: \[HttpRequest\]/)
+  assert.match(text, /不预写 installing\/reinstalling\/uninstalling/)
+  assert.match(text, /资料不是权限/)
+  assert.match(text, /先观察/)
+  assert.doesNotMatch(text, /tools:.*ResolveApplication|tools:.*RecordApplication/)
+  for (const name of ['recording-api.md', 'recovery.md', 'legacy-services.md']) {
+    assert.ok((await readFile(join(here, '..', 'references', name), 'utf8')).length > 0)
+  }
+})
+
 test('Skill contract has no fixed official/local Registry fallback and resolves before execution', async () => {
-  const skill = await readFile(skillPath, 'utf8')
+  const skill = await readFile(join(here, '..', 'references', 'legacy-services.md'), 'utf8')
   assert.doesNotMatch(skill, /registry\/official\/entries/)
   assert.match(skill, /POST \/api\/registry\/acquisitions\/resolve/)
   assert.match(skill, /禁止 fallback/)
