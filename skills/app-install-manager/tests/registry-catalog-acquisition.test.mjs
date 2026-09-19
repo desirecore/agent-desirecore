@@ -654,6 +654,18 @@ test('Skill-first 正文短而完整、按需提供既有 HTTP 工具、不加�
   }
 })
 
+test('首装观察示例复用 resolver material，不将 install 改为 manage', async () => {
+  const api = await readFile(join(here, '..', 'references', 'recording-api.md'), 'utf8')
+  const skill = await readFile(skillPath, 'utf8')
+  assert.match(api, /material: resolution\.data\.material/)
+  assert.match(api, /expectedRevision: resolution\.data\.expectedRevision/)
+  assert.match(api, /首装完成后仍是 install/)
+  assert.doesNotMatch(api, /"action":\s*"manage"/)
+  assert.match(skill, /首装结束也不能改成 manage/)
+  const recovery = await readFile(join(here, '..', 'references', 'recovery.md'), 'utf8')
+  assert.match(recovery, /响应未知不能如此处理/)
+})
+
 test('Skill contract has no fixed official/local Registry fallback and resolves before execution', async () => {
   const skill = await readFile(join(here, '..', 'references', 'legacy-services.md'), 'utf8')
   assert.doesNotMatch(skill, /registry\/official\/entries/)
