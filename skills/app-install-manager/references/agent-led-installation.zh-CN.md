@@ -28,6 +28,8 @@ materials 每项含 purpose 和 url 或 fileRef（二选一），可附 revision
 
 POST /api/registry/acquisitions/resolve，body 为上述对象。只有 success=true 且 data.protocol=application-management-v2 才继续，保存 data.material 与 expectedRevision。knowledge 是目录安装知识，可能没有 installGuide；缺失不等于禁止安装。record 包含历史实例、maintenance 和 observation。目录离线时使用已有实例资料继续。读到旧 v1 实例时，兼容解析返回其稳定 ID；写入 v2 后不可用 v1 修改。
 
+解析后 material 中的 hostInstanceId 绑定账本宿主；后续请求必须原样保留。连接切换导致宿主不匹配时停止，不删除绑定去安装另一台机器。它用于目标核对，不授予权限。
+
 读取说明、检查宿主和已有安装后，自主决定实际方法；有 Compose/脚本就评估使用，没有就根据 README、源码、配置和 SQL 形成方案。在约束内自行排错，无需软件实现统一安装接口。
 
 ## 实际资源占用

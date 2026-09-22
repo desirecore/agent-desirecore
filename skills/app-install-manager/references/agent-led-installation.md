@@ -30,6 +30,8 @@ POST /api/registry/acquisitions/resolve with the envelope. Continue only on succ
 
 Read instructions, inspect the host and existing installations, then select the method. Evaluate available Compose/scripts; otherwise build a method from README, source, configuration and SQL. Adapt within constraints without requiring a standard software installation API.
 
+The resolved material includes hostInstanceId to bind the ledger host. Preserve it on subsequent requests. A host mismatch after switching connections must stop the operation; never remove the binding to install on another machine. It validates the target and grants no permission.
+
 ## Resource ownership
 
 Before side effects POST /api/installed-entries/resource-claims with `{material, operation:"claim", resources:["actual absolute installation directory or stable container/project locator"]}`. Use resolved material unchanged. All tasks must use consistent locators. Windows drive paths normalize case/separators; other locators must be stable. Claim shared databases by server/database identity too, not only the software directory.
