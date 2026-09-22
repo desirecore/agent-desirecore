@@ -26,6 +26,8 @@
 
 materials 每项含 purpose 和 url 或 fileRef（二选一），可附 revision、sha256。fileRef 使用已有签发引用；不要把绝对路径冒充 fileRef。SQL、源码、模板和大文件用引用，不复制正文到 JSON。URL 可以先浮动，再保存实际使用内容的 revision/hash；材料不是执行授权。
 
+本地文件没有现成引用时，向活动服务 GET `/api/files/resolve-reference?agentId=<当前智能体ID>&path=<URL编码的绝对路径>`，将返回的顶层 `resourceRef` 作为 `fileRef`。服务会检查已登记根；不得编造 rootId 或扩大权限绕过拒绝。材料没有 `location` 字段。无法签发引用时，在维护说明保留实际路径和原因，并披露结构化引用缺失，不编造 URL。400 校验失败未写入登记：只修正被拒字段，保留已有部署和 SQL 状态，然后重试登记。
+
 POST /api/registry/acquisitions/resolve，body 为上述对象。只有 success=true 且 data.protocol=application-management-v2 才继续，保存 data.material 与 expectedRevision。knowledge 是目录安装知识，可能没有 installGuide；缺失不等于禁止安装。record 包含历史实例、maintenance 和 observation。目录离线时使用已有实例资料继续。读到旧 v1 实例时，兼容解析返回其稳定 ID；写入 v2 后不可用 v1 修改。
 
 解析后 material 中的 hostInstanceId 绑定账本宿主；后续请求必须原样保留。连接切换导致宿主不匹配时停止，不删除绑定去安装另一台机器。它用于目标核对，不授予权限。
