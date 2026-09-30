@@ -42,7 +42,10 @@
         "tier": "flagship"
       }
     },
-    "maxRetryDelayMs": 32000
+    "maxRetryDelayMs": 32000,
+    "provider": "desirecore-cloud",
+    "providerId": "desirecore-cloud",
+    "model": "mimo-v2.5-pro"
   },
   "env": {
     "enabled": true,
