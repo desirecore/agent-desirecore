@@ -17,6 +17,9 @@
       "path": "assets/avatar.webp"
     }
   },
+  "ui": {
+    "chat_bubble_mode": "classic"
+  },
   "default_enabled": {
     "skills": [
       "create-agent",

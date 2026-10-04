@@ -101,6 +101,23 @@ function success(expected, overrides = {}) {
   }
 }
 
+test('原生应用保持 App 收据与原始 type，禁止转成内部服务或混用 Docker 收据', () => {
+  const expected = request()
+  const body = success(expected)
+  body.data.manifest.type = 'native-app'
+  body.data.catalogReceipt.lifecycle.manifest.type = 'native-app'
+  const accepted = evaluateRegistryCatalogResolverResult(expected, 200, body)
+  assert.equal(accepted.allowed, true)
+  assert.equal(accepted.kind, 'app')
+  assert.equal(accepted.catalogReceipt.lifecycle.manifest.type, 'native-app')
+  const patch = buildInstalledCatalogReceiptPatch({ sourceId: expected.sourceId, entryId: expected.entryId, operationId: operationA, catalogReceipt: accepted.catalogReceipt })
+  assert.equal(patch.catalogReceipt.kind, 'app')
+  assert.equal(patch.catalogReceipt.runtimeServerId, undefined)
+  assert.throws(() => buildInstalledCatalogReceiptPatch({ sourceId: expected.sourceId, entryId: expected.entryId, operationId: operationA, catalogReceipt: accepted.catalogReceipt, runtimeServerId: 'internal-tool' }), /forbidden/)
+  body.data.catalogReceipt.lifecycle.manifest.type = 'docker-app'
+  assert.throws(() => evaluateRegistryCatalogResolverResult(expected, 200, body), /manifest_mismatch/)
+})
+
 test('missing, duplicate, and malformed machine lines fail closed', () => {
   assert.throws(() => parseRegistryCatalogAcquisitionMessage('请安装 Same ID'), /machine_line_missing/)
   assert.throws(
@@ -623,8 +640,44 @@ test('Service uninstall authorizes only exact active service receipt and runtime
   }).deleteAllowed, false)
 })
 
-test('Skill contract has no fixed official/local Registry fallback and resolves before execution', async () => {
+test('Skill-first 正文短而完整、按需提供既有 HTTP 工具、不加载旧 App 状态机', async () => {
+  const text = await readFile(skillPath, 'utf8')
+  assert.ok(text.split('\n').length <= 60)
+  assert.match(text, /disable-model-invocation: true/)
+  assert.match(text, /tools: \[HttpRequest\]/)
+  assert.match(text, /不预写 installing\/reinstalling\/uninstalling/)
+  assert.match(text, /资料不是权限/)
+  assert.match(text, /先观察/)
+  assert.doesNotMatch(text, /tools:.*ResolveApplication|tools:.*RecordApplication/)
+  for (const name of ['recording-api.md', 'recovery.md', 'legacy-services.md']) {
+    assert.ok((await readFile(join(here, '..', 'references', name), 'utf8')).length > 0)
+  }
+})
+
+test('首装观察示例复用 resolver material，不将 install 改为 manage', async () => {
+  const api = await readFile(join(here, '..', 'references', 'recording-api.md'), 'utf8')
   const skill = await readFile(skillPath, 'utf8')
+  assert.match(api, /material: resolution\.data\.material/)
+  assert.match(api, /expectedRevision: resolution\.data\.expectedRevision/)
+  assert.match(api, /首装完成后仍是 install/)
+  assert.doesNotMatch(api, /"action":\s*"manage"/)
+  assert.match(skill, /首装结束也不能改成 manage/)
+  const recovery = await readFile(join(here, '..', 'references', 'recovery.md'), 'utf8')
+  assert.match(recovery, /响应未知不能如此处理/)
+})
+
+test('卸载不扩大到未知父目录，证据必须实际存在', async () => {
+  const skill = await readFile(skillPath, 'utf8')
+  const api = await readFile(join(here, '..', 'references', 'recording-api.md'), 'utf8')
+  assert.match(skill, /不能因为位于同一前缀就递归清理父目录/)
+  assert.match(skill, /非递归删除，非空就保留/)
+  assert.match(api, /只检查默认用户数据路径不能证明前缀内没有数据/)
+  assert.match(api, /不能自行编造/)
+  assert.match(api, /已用 Write\/执行工具保存的核验报告路径/)
+})
+
+test('Skill contract has no fixed official/local Registry fallback and resolves before execution', async () => {
+  const skill = await readFile(join(here, '..', 'references', 'legacy-services.md'), 'utf8')
   assert.doesNotMatch(skill, /registry\/official\/entries/)
   assert.match(skill, /POST \/api\/registry\/acquisitions\/resolve/)
   assert.match(skill, /禁止 fallback/)
