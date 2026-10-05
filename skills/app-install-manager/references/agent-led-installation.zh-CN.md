@@ -42,6 +42,8 @@ POST /api/registry/acquisitions/resolve，body 为上述对象。只有 success=
 
 ## 验证并登记
 
+插件、带贡献或直接依赖的普通应用，先读[贡献安装与启停](plugin-contributions.zh-CN.md)。目录首装 `knowledge` 的 `productKind`、`type`、`extension`、`descriptorRequired` 来自服务端目录；需要描述材料时为 deployment 增加真实 `type` 和 `descriptor: {fileRef, sha256}`。下面的通用示例不代替该要求；缺失描述会拒绝，不能把扩展登记成默认应用。非目录声明制品也必须提交描述。
+
 PATCH /api/installed-entries/instances/{installationId}：
 
 ```text

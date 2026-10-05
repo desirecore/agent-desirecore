@@ -42,6 +42,8 @@ Coordinate a conflicting holder rather than changing UUID and executing concurre
 
 ## Verify and record
 
+For plugins and applications with contributions or direct dependencies, first read [Contribution installation and settings](plugin-contributions.md). For a fresh catalog target, knowledge.productKind/type/extension/descriptorRequired come from the server catalog. When a descriptor is required, add the actual deployment.type and descriptor: {fileRef, sha256}. The generic example below does not replace these requirements; missing declarations must not be registered as default applications. Non-catalog declarative artifacts also require a descriptor.
+
 PATCH /api/installed-entries/instances/{installationId}:
 
 ```text
