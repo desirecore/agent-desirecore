@@ -66,7 +66,7 @@ Existing resources with failed database initialization mean present + incomplete
 
 Maintenance notes persist within the instance record. Include actual version, resource/data locations, identification/opening methods, initialization/migration history, verification, update/removal preservation rules and unfinished work. Reference larger materials durably; do not rely exclusively on expiring URLs, temporary attachments or session caches. Later Agents read these notes; the platform does not execute them.
 
-Recording does not require the catalog to remain listed. Structure, host/owner, material scope and revision are still checked. Report software results and recording results separately on failure.
+Maintenance of existing instances and identical replays of committed records can continue from historical facts when the catalog is offline or the product is delisted. Structure, host/owner, material scope and revision are still checked. Before recording a fresh catalog installation, the service rechecks current product facts and client compatibility for the exact catalogSourceId + softwareId; earlier resolve material alone cannot authorize recording when no compatible target is available. On recording failure, reread and repair the recording issue without repeating completed software side effects such as installation, initialization or removal. Report software results and recording results separately.
 
 ## Recovery and maintenance
 
