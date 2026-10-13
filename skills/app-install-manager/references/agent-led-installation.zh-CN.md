@@ -42,6 +42,8 @@ POST /api/registry/acquisitions/resolve，body 为上述对象。只有 success=
 
 ## 验证并登记
 
+插件、带贡献或直接依赖的普通应用，先读[贡献安装与启停](plugin-contributions.zh-CN.md)。目录首装 `knowledge` 的 `productKind`、`type`、`extension`、`descriptorRequired` 来自服务端目录；需要描述材料时为 deployment 增加真实 `type` 和 `descriptor: {fileRef, sha256}`。下面的通用示例不代替该要求；缺失描述会拒绝，不能把扩展登记成默认应用。非目录声明制品也必须提交描述。
+
 PATCH /api/installed-entries/instances/{installationId}：
 
 ```text
@@ -64,7 +66,7 @@ PATCH /api/installed-entries/instances/{installationId}：
 
 maintenance 与实例同条持久化，必须写清实际版本、资源/数据位置、辨认及打开方法、已执行初始化与迁移、验证方法、更新/卸载保留规则和剩余工作。大材料可使用持久文件引用；不要只留下会过期的 URL、临时附件或会话缓存。维护说明由后续 Agent 阅读，不由平台直接执行。
 
-登记 API 不重新要求当前目录上架，因此已发生事实可记录；结构、宿主/所有者、材料作用域及 revision 仍校验。提交失败时分别报告软件结果与登记结果。
+已有实例维护和已提交记录的完全相同重放，可在目录离线或产品下架时依据历史事实继续；结构、宿主/所有者、材料作用域及 revision 仍校验。目录首装登记前会重新核对精确 catalogSourceId + softwareId 的当前产品事实与客户端兼容性；无法取得兼容目标时不能仅凭此前 resolve 的资料提交。登记失败只重读并修复登记问题，不重复已完成的安装、初始化或卸载等软件副作用；分别报告软件结果与登记结果。
 
 ## 恢复与后续维护
 

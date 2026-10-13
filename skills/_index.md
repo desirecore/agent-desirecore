@@ -14,7 +14,7 @@
 | 技能 ID | 描述 | 风险 |
 |---------|------|------|
 | [task-management](./task-management/SKILL.md) | 任务创建、分配、跟踪与多 Agent 编排 | low |
-| [app-install-manager](./app-install-manager/SKILL.md) | 经目录快照 resolver 授权的 docker-app / 服务安装、卸载、启停与状态回写 | high |
+| [app-install-manager](./app-install-manager/SKILL.md) | v2 自主应用/插件安装、维护与实例事实登记；目录资料不授予执行权限，兼容旧服务协议 | high |
 
 ## 技能协作关系
 

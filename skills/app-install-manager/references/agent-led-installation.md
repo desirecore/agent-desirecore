@@ -42,6 +42,8 @@ Coordinate a conflicting holder rather than changing UUID and executing concurre
 
 ## Verify and record
 
+For plugins and applications with contributions or direct dependencies, first read [Contribution installation and settings](plugin-contributions.md). For a fresh catalog target, knowledge.productKind/type/extension/descriptorRequired come from the server catalog. When a descriptor is required, add the actual deployment.type and descriptor: {fileRef, sha256}. The generic example below does not replace these requirements; missing declarations must not be registered as default applications. Non-catalog declarative artifacts also require a descriptor.
+
 PATCH /api/installed-entries/instances/{installationId}:
 
 ```text
@@ -64,7 +66,7 @@ Existing resources with failed database initialization mean present + incomplete
 
 Maintenance notes persist within the instance record. Include actual version, resource/data locations, identification/opening methods, initialization/migration history, verification, update/removal preservation rules and unfinished work. Reference larger materials durably; do not rely exclusively on expiring URLs, temporary attachments or session caches. Later Agents read these notes; the platform does not execute them.
 
-Recording does not require the catalog to remain listed. Structure, host/owner, material scope and revision are still checked. Report software results and recording results separately on failure.
+Maintenance of existing instances and identical replays of committed records can continue from historical facts when the catalog is offline or the product is delisted. Structure, host/owner, material scope and revision are still checked. Before recording a fresh catalog installation, the service rechecks current product facts and client compatibility for the exact catalogSourceId + softwareId; earlier resolve material alone cannot authorize recording when no compatible target is available. On recording failure, reread and repair the recording issue without repeating completed software side effects such as installation, initialization or removal. Report software results and recording results separately.
 
 ## Recovery and maintenance
 
