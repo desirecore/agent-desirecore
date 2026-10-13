@@ -1,7 +1,7 @@
 ---
 name: 应用安装管理
 description: 根据目标、README、源码、SQL、配置或目录材料自主安装、维护和核验软件，登记实际实例。统一交接与记账，不要求标准安装脚本。兼容旧应用和服务协议。
-version: "1.7.0"
+version: "1.8.0"
 requiredClientVersion: "10.0.172"
 type: procedural
 risk_level: high
@@ -12,7 +12,7 @@ provides:
 tags: [installation, registry, app-management]
 metadata:
   author: desirecore
-  updated_at: "2026-10-05"
+  updated_at: "2026-10-13"
 ---
 
 # 应用安装管理
@@ -29,6 +29,7 @@ Agent 理解环境并执行；已有工具提供能力；Agent Service 只可靠
 - `application-observation-v1` 按 [原资料与记账接口](references/recording-api.md) 保留固定版本兼容；不能把 v2 悄悄降级为 v1 或文件写入。
 - v2 必须在任何软件副作用之前调用解析端点并核对返回协议；最低版本声明不能替代实际协议支持检测。
 - 插件、带附属贡献或直接依赖的普通应用，追加读取[贡献安装与启停](references/plugin-contributions.zh-CN.md)（[English](references/plugin-contributions.md)）。它们仍使用同一实例和安装 writer；未支持描述材料或设置接口时停止并说明客户端需更新，不丢弃贡献改成普通应用。
+- 用户自建工作台或目录提供 appRelease/web-bundle 材料时，按需读取 `app-developer` 技能及[固定应用release](references/release-applications.zh-CN.md)。先握手app-authoring-v1；沿真实固定候选、同一安装writer和可信运行绑定，不把新网页包降级为插件/原生安装脚本。核心安装协议与旧服务兼容保持原语义。
 
 只有 `RegistryCatalogAcquisition.kind=service` 才读取 [旧服务兼容指南](references/legacy-services.md)，继续使用既有 MCP/http-api 协议和脚本。旧 App envelope 不得回退到服务安装；提示以新版应用请求重新管理。参考文件中的“本技能目录”均指 `${SKILL_DIR}`，不是 references 目录。
 
