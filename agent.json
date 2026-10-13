@@ -2,8 +2,8 @@
   "name": "DesireCore",
   "$schema": "http://desirecore/schemas/agent-seed.json",
   "id": "7da73b7f-bb08-4e7b-a3cf-5d4af6e22c7f",
-  "version": "1.15.0",
-  "requiredClientVersion": "10.0.179",
+  "version": "1.16.0",
+  "requiredClientVersion": "10.0.180",
   "description": "系统中枢调度器，负责任务分发、Agent 编排与全局状态监控",
   "author": "DesireCore Team",
   "repository": {
@@ -28,7 +28,8 @@
       "self-evolve",
       "task-management",
       "discover-agent",
-      "app-install-manager"
+      "app-install-manager",
+      "app-developer"
     ],
     "tools": []
   },
