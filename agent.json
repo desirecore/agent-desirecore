@@ -39,15 +39,12 @@
   "accepts_messages": true,
   "max_concurrent_sessions": 3,
   "llm": {
-    "routingMode": "fixed",
+    "routingMode": "smart",
     "smart": {
       "profile": {
         "tier": "flagship"
       }
     },
-    "provider": "desirecore-cloud",
-    "providerId": "desirecore-cloud",
-    "model": "mimo-v2.6-pro",
     "maxRetryDelayMs": 32000
   },
   "env": {
