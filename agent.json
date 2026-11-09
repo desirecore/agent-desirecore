@@ -1,6 +1,6 @@
 {
   "name": "DesireCore",
-  "$schema": "http://desirecore/schemas/agent.json",
+  "$schema": "http://desirecore/schemas/agent-seed.json",
   "id": "7da73b7f-bb08-4e7b-a3cf-5d4af6e22c7f",
   "version": "1.16.0",
   "requiredClientVersion": "10.0.179",
