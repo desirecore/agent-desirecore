@@ -1,7 +1,7 @@
 ---
 name: 应用安装管理
 description: 经目录快照或已安装生命周期收据 resolver 授权后安装/卸载/启停 docker-app、native-app 原生应用与 mcp/http-api 服务（docker-app：解析 manifest/installGuide → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：使用 resolver 返回的 install/connection → 注册到 Agent → 连接验证 → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
-version: "1.4.0"
+version: "1.4.1"
 type: procedural
 risk_level: high
 status: enabled
@@ -9,7 +9,7 @@ disable-model-invocation: true
 tags: [installation, docker, mcp, registry, app-management]
 metadata:
   author: desirecore
-  updated_at: "2026-09-18"
+  updated_at: "2026-11-12"
 ---
 
 # app-install-manager 技能
@@ -101,7 +101,7 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
    `registry_acquisition_ownership_mismatch`；同时保留通过有界校验的 reasons。任何非 200、
    连接失败、非 JSON 或身份/快照/manifest 不一致都禁止执行命令，并先完成强制结算。
 5. **禁止 fallback**：不得读取任何本地 Registry 条目、改用同 ID 其它来源或沿用旧 resolver 响应。
-   resolver/ownership 只决定本次读取与精确归属，不新增安装账本，也不替代 Human Gate、健康校验、
+   resolver/ownership 只决定本次读取与精确归属，不新增安装账本，也不替代工具审批、健康校验、
    回滚和终态收据。
 
 安装记录条目结构（写回时必须完整保留全部字段）：
@@ -169,20 +169,30 @@ operationId PATCH `installed`，省略 receipt/version，让服务端保留旧�
 
 ### 执行前停止的强制结算
 
-UI 在发消息前已经写入中间态。locator 成功后，完整解析失败、resolver 拒绝/异常、Human Gate
-取消、环境检查失败，或任何尚未执行安装/卸载命令的退出，都必须按下面的单账本流程结算：
+UI 在发消息前已经写入中间态。locator 成功后，完整解析失败、resolver 拒绝/异常、工具审批被拒、
+环境检查失败，或任何尚未执行安装/卸载命令的退出，都必须按下面的单账本流程结算：
 
 1. `GET /api/installed-entries` 取得当前实例记录；不得直读其它实例或构造新记录。
-2. 把 `{stage,locator,entries}` 交给脚本的 `plan-settlement`。stage 只能是
-   `parse|resolver|human_gate|pre_execution`。它严格匹配 sourceId+entryId+deviceId 和与 operation
+2. 把 `{stage,locator,entries}` 交给脚本的 `plan-settlement`。stage 取
+   `parse|resolver|pre_execution`：解析失败用 `parse`，resolver 拒绝/异常用 `resolver`，工具审批
+   被拒、环境检查失败及其它执行前退出用 `pre_execution`。脚本仍接受旧值 `human_gate` 作兼容，
+   本流程不再使用。它严格匹配 sourceId+entryId+deviceId 和与 operation
    对应的中间态与 operationId；同 ID 双来源、跨设备或旧消息重放都不会串写，零条/多条都返回
    settlement:null。
 3. settlement 非空时，按“回写安装记录的统一方式”PATCH 它给出的精确三元组和 status：
    `installing → failed`，`reinstalling → installed`，`uninstalling → installed`，并原样携带
    settlement.operationId。结算前后都不得执行
    Docker、包管理或安装脚本。settlement:null 时报告有界原因并停止，不按数组顺序、名称或设备猜测。
-4. Human Gate 取消也是正常停止而非悬空：首装回 `failed`，重装/卸载恢复 `installed`。resolver
-   错误码与 reasons 在完成结算后原样说明。
+4. 工具审批被拒或用户在对话中叫停也是正常停止而非悬空：首装回 `failed`，重装/卸载恢复
+   `installed`。resolver 错误码与 reasons 在完成结算后原样说明。
+
+### 授权与审批
+
+界面发来的生命周期指令（含机器消息）就是用户本次操作的授权：用户已在界面上选定条目与设备并点击
+安装/卸载，MCP 服务还在设备选择处看到了完整命令与风险说明（ADR-349 决策 1）。不在对话里再确认
+一次。后续 HttpRequest、`bash` 等调用按本 Agent 当前审批档位和「总是允许」规则审批，全部放行时不再
+询问；审批被拒按 `pre_execution` 结算。只有操作超出本次机器消息的范围（例如删除用户数据、改用其它
+端口、停掉不属于本应用的进程）时，才向用户说明并询问。
 
 ### 回写安装记录的统一方式（端点优先，404 降级）
 
@@ -231,8 +241,8 @@ parameters:
 3. **环境校验**（`bash`）：`docker version` / `docker compose version` 确认 docker 就绪；用
    `manifest.install.requirements.ports` 检查端口占用（`lsof -i :<port>` 或 `docker ps`）；检查磁盘
    空间。任一不满足→先按 `pre_execution` 结算再停下，向用户说明并给出修复建议。
-4. **高风险确认**：安装/卸载会改动本机容器，属高风险。执行前用一句话向用户确认（应用名 +
-   目标设备 + 端口）。用户取消则按 `human_gate` 结算后中止。
+4. **授权与审批**：界面发来的安装指令就是用户的操作，不在对话里再确认（见「授权与审批」）。
+   下一步的 `bash` 调用按当前审批档位审批，审批被拒按 `pre_execution` 结算后中止。
 5. **执行**（`bash`，严格按 resolver 返回的 installGuide）：
    - docker-compose 类：在应用工作目录 `docker compose up -d`；docker 类：`docker run ...`。
    - 失败立即捕获输出，进入"失败处理"。
@@ -253,9 +263,10 @@ parameters:
    legacy 记录或 receipt/snapshot 不一致都拒绝。
 2. 只使用 resolver 从 receipt 返回并通过脚本复核的 manifest/installGuide 作为卸载定义；不得读取
    当前 Registry 同 ID 条目补命令。resolver 拒绝时先结算回 `installed` 并提示手工管理/升级，不能
-   发明 compose 目录或容器名。取得定义后再做 Human Gate；取消即回 `installed`。
-3. `bash`：只按 receipt 绑定的 installGuide 执行卸载（如 `docker compose down -v`），按需清理
-   卷/镜像。
+   发明 compose 目录或容器名。界面发出的卸载指令就是用户的操作，取得定义后直接执行，不在对话里
+   再确认；工具审批被拒按 `pre_execution` 结算回 `installed`。
+3. `bash`：只按 receipt 绑定的 installGuide 停止并移除容器（如 `docker compose down`）。卷里的
+   用户数据默认保留；删除卷超出本次卸载指令的范围，需先向用户说明并取得同意。
 4. 回写安装记录（按「回写安装记录的统一方式」）：
    - **成功**（容器确已停止/删除）→ PATCH `status: uninstalled`。后端 watcher 据此清理派生服务与 per-service Skill。
    - **失败**（容器未能停止/删除，应用仍在运行）→ PATCH `status: installed`，向用户说明卸载失败原因。**切勿**留在 `uninstalling`（界面卸载按钮会禁用，用户被卡住直至 stale 超时）。
@@ -265,12 +276,12 @@ parameters:
 
 原生应用属于 App，不是本 Agent 的 MCP 工具。**DesireCore Control 是外部智能体控制 DesireCore 的独立应用；即使它向外暴露 MCP，也绝不调用内部 `/api/mcp/install` 或 `/api/agents/desirecore/mcp-servers` 注册它。** 不改写 Agent 配置，不创建自启动项，不跟随 DesireCore 启停，不把宿主机 CDP 放进 Docker。
 
-1. 执行前协议与 Human Gate 完全沿用 App 流程。先调用 resolver 并用 `evaluate-response` 复核，再进行任何环境探测或包管理操作。manifest.type 与 lifecycle.manifest.type 必须同为 `native-app`，candidate.kind 为 `app`，不接受 runtimeServerId。
+1. 执行前协议与「授权与审批」完全沿用 App 流程，不在对话里再确认。先调用 resolver 并用 `evaluate-response` 复核，再进行任何环境探测或包管理操作。manifest.type 与 lifecycle.manifest.type 必须同为 `native-app`，candidate.kind 为 `app`，不接受 runtimeServerId。
 2. 新装/升级只认复核后 manifest 的 `install.method=native-node`、`requirements.node`、目标设备、固定 Release URL/ref/SHA-256 和 installGuide。检查宿主机 Node 版本、可写安装目录、磁盘、默认管理端口；不要求 Docker。缺乏不可变制品或不支持原生应用的客户端时先结算再停止，不改写 type 兼容旧客户端。
-3. 在用户批准的独立应用目录按 installGuide 下载、**先核对 SHA-256 再安装**。版本、启动命令与目录绑定到该安装，不执行浮动 latest，不复用其他应用/实例目录。升级前保留旧版；新包验证失败时恢复可用旧版并按既有重装语义回写。
+3. 在 installGuide 指定（或用户另行指定）的独立应用目录按 installGuide 下载、**先核对 SHA-256 再安装**。版本、启动命令与目录绑定到该安装，不执行浮动 latest，不复用其他应用/实例目录。升级前保留旧版；新包验证失败时恢复可用旧版并按既有重装语义回写。
 4. 使用 installGuide 的隔离安装自检验证包、版本及本机 HTTP 管理页；不要为了安装验证读取真实 DesireCore 实例、截图或运行模型。**安装成功不等于持续运行**：验证进程正常退出后可回写 installed，运行态保持 stopped/unknown。用户另行请求启动时再启动。`--allow-control`、外部隧道、真实 OpenAI key 均需独立明确授权；安装本身不启用它们。
 5. 自检通过后用 `build-receipt-patch` 原样保存服务器 candidate，`kind=app`、`type=native-app`，按精确 operationId 回写 installed。不要派生内部 MCP/HTTP 服务，不以登记工具数作为安装成功条件。
-6. 卸载只使用原安装 receipt 的 installGuide；确认后停止准确的自有应用进程、卸载该应用的包。不得按进程名批量终止 Node、其他 tunnel-client 或 DesireCore，也不得删除 DesireCore 数据。凭据与用户配置默认保留，删除需另行确认。卸载成功回 uninstalled；失败但仍可用回 installed，不能遗留中间态。
+6. 卸载只使用原安装 receipt 的 installGuide；停止准确的自有应用进程、卸载该应用的包。不得按进程名批量终止 Node、其他 tunnel-client 或 DesireCore，也不得删除 DesireCore 数据。凭据与用户配置默认保留，删除需另行确认。卸载成功回 uninstalled；失败但仍可用回 installed，不能遗留中间态。
 
 原生应用启动/停止同样要求精确安装身份和原生命周期定义，通过用户批准的独立终端运行。状态改变不伪造安装/升级事实，管理页用系统浏览器打开；已配置的默认端口被占用时先停止并说明，不悄悄换端口导致“我的应用”指向别处。
 
@@ -278,9 +289,12 @@ parameters:
 
 **mcp 服务**（manifest.type=`mcp`，条目含 `install` 与 `connection` 字段）：
 
-1. **解析机器消息并调用 resolver + 确认**：严格执行“执行前协议”，以复核后的复合身份确定
+1. **解析机器消息并调用 resolver**：严格执行“执行前协议”，以复核后的复合身份确定
    `entryId`，以 operation.deviceId 确定目标设备（mcp 通常装到本机）。resolver 失败时在任何安装命令前
-   停止；成功后再做高风险确认。界面已乐观写 `installing`/`reinstalling`。
+   停止。商店发来的机器消息就是用户本次操作的授权（用户已在设备选择处看到完整命令与风险说明并
+   点击，ADR-349 决策 1），不在对话里再确认。后续 HttpRequest、`bash` 调用按本 Agent 当前审批档位
+   和「总是允许」规则审批，全部放行时不再询问；审批被拒按 `pre_execution` 结算。界面已乐观写
+   `installing`/`reinstalling`。
 2. **使用本次授权定义**：只用 resolver 响应的 manifest/install/connection（`install` 含 method、
    packageName、command、args、postInstall；`connection` 含 transport/command/args/url/headers）。
    不读取或合并本地同 ID 条目。
@@ -329,7 +343,8 @@ parameters:
    request.snapshot 和 `GET /api/installed-entries` 结果做完整复核：必须精确命中
    sourceId+entryId+deviceId 的唯一 `uninstalling` 记录，receipt.kind 必须为 service，且
    catalogReceipt.runtimeServerId 与 snapshot 必须有效。无 receipt/kind/runtimeServerId、身份/快照不符、
-   零条或多条都先结算回 `installed` 并停止。随后做高风险确认，取消同样结算回 `installed`。
+   零条或多条都先结算回 `installed` 并停止。界面发出的卸载指令就是用户的操作，复核通过后直接
+   执行，不在对话里再确认；工具审批被拒按 `pre_execution` 结算回 `installed`。
 2. **执行卸载**（mcp）：从 Agent 移除 MCP server 配置：
    ```yaml
    tool: HttpRequest
@@ -353,8 +368,8 @@ parameters:
 
 收到"启动/停止/重启 {应用}"（docker-app / native-app）不走 catalog acquisition envelope：它只能以资源管理面
 已经精确选中的 sourceId+entryId+deviceId 和实例级生命周期定义执行。缺精确实例或定义时停止，
-不得用名称、本地 Registry 同 ID 条目或当前 catalog 猜容器。完成高风险确认后才用 `bash` 执行
-该实例定义允许的 start/stop/restart；这类运行态切换不改变 installed-entry 的 install 状态。
+不得用名称、本地 Registry 同 ID 条目或当前 catalog 猜容器。界面发出的启停指令就是用户的操作，
+不在对话里再确认；`bash` 按当前审批档位执行该实例定义允许的 start/stop/restart；这类运行态切换不改变 installed-entry 的 install 状态。
 
 ### 失败处理
 
@@ -366,7 +381,7 @@ parameters:
 | resolver 200 缺失/篡改 catalogReceipt 或 App lifecycle guide 超过 64 KiB | 拒绝执行；禁止本地补建/截断 lifecycle，先强制结算 |
 | receipt PATCH CAS/runtime/lifecycle 冲突 | 禁止修改候选绕过；MCP 回滚注册后结算，App 按失败语义结算 |
 | operationId 缺失/畸形或旧消息重放 | 失败关闭；不得用当前 installed-entry 的新 operationId 替换旧消息，禁止执行或结算新意图 |
-| Human Gate 取消 | 首装回 `failed`，重装/卸载回 `installed`，不得遗留中间态 |
+| 工具审批被拒或用户叫停 | 按 `pre_execution` 结算：首装回 `failed`，重装/卸载回 `installed`，不得遗留中间态 |
 | docker 未运行 | 提示用户启动 Docker；首装回 `failed`，重装回 `installed` |
 | 端口被占用 | 列出占用进程，建议换端口或停占用，征求用户意见 |
 | compose 启动失败 | `docker compose logs` 取错误，回写 `failed`，附日志摘要 |
@@ -384,7 +399,8 @@ parameters:
 - App resolver 必须先于 Docker 探测、包管理和所有执行类 `bash`；非 200 或复核失败没有 fallback，
   并必须先结算中间态。uninstall 不受当前 catalog listing/stale 阻断，但只能使用精确 ownership 与
   lifecycle receipt 解析出的旧版本定义。
-- 所有破坏性 docker 操作与 Agent 配置写入前必须有用户确认（risk_level: high）。
+- 破坏性操作与 Agent 配置写入由工具审批按当前档位把关，全部放行时不再询问；只有操作超出本次机器
+  消息的范围时，才向用户说明并询问（见「授权与审批」）。
 - 回写状态优先用 PATCH 端点（自带 status 枚举校验与原子写）；仅端点不可用时降级 file-write，此时须自行保证结构合法（status 仅限六枚举值），否则界面加载会过滤掉脏条目。
 - **先校验后回写**：docker-app 必须健康校验通过、mcp 必须连接校验通过，才回写 `installed`——installed-entries 是「你校验过的事实」，不是「执行过命令」。
 - **中间态是过渡态，你必须回写终态或（卸载/重装失败时）回 `installed`**——绝不把记录停在 `installing`/`reinstalling`/`uninstalling`，否则界面对应操作按钮会禁用、用户被卡住。
