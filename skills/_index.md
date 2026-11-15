@@ -3,11 +3,9 @@
 > create-agent、update-agent、delete-agent、discover-agent 已迁移至全局技能层（`<根目录>/skills/`），
 > 由 `syncBuiltinSkills()` 捆绑源自动同步，不再随 Agent 仓库分发。
 
-## 元技能（Meta-Skills）
-
-| 技能 ID | 描述 | 风险 |
-|---------|------|------|
-| [self-evolve](./self-evolve/SKILL.md) | 在交互中学习，自主提出改进建议 | high |
+> self-evolve（自我进化）已移出核心 Agent，改为市场可选装技能
+> （[desirecore-agent/skill-self-evolve](https://github.com/desirecore-agent/skill-self-evolve)），
+> 需要时经 DiscoverCapabilities / InstallCapability 选装。
 
 ## 流程型技能（Procedural Skills）
 
@@ -21,10 +19,10 @@
 ```
             Agent 级技能
 ┌──────────────────────────────────────────────┐
-│  ┌─────────────┐  ┌──────────────────┐       │
-│  │ self-evolve  │  │ task-management   │       │
-│  │ （进化）     │  │ （任务管理）      │       │
-│  └─────────────┘  └──────────────────┘       │
+│  ┌─────────────────┐ ┌─────────────────────┐ │
+│  │ task-management │ │ app-install-manager │ │
+│  │ （任务管理）    │ │ （应用安装）        │ │
+│  └─────────────────┘ └─────────────────────┘ │
 └──────────────────────────────────────────────┘
 
             全局技能（<根目录>/skills/）
@@ -47,8 +45,8 @@
 ```
 skills/
 ├── _index.md                      # 本文件：技能索引
-├── self-evolve/                   # 元技能：自主学习与进化
+├── task-management/               # 流程技能：任务管理与编排
 │   └── SKILL.md
-└── task-management/               # 流程技能：任务管理与编排
+└── app-install-manager/           # 流程技能：应用/插件安装与维护
     └── SKILL.md
 ```
