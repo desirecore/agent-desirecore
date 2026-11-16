@@ -1,7 +1,7 @@
 ---
 name: 应用安装管理
 description: 经目录快照或已安装生命周期收据 resolver 授权后安装/卸载/启停 docker-app、native-app 原生应用与 mcp/http-api 服务（docker-app：解析 manifest/installGuide → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：使用 resolver 返回的 install/connection → 注册到 Agent → 连接验证 → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
-version: "1.4.1"
+version: "1.4.2"
 type: procedural
 risk_level: high
 status: enabled
@@ -9,7 +9,7 @@ disable-model-invocation: true
 tags: [installation, docker, mcp, registry, app-management]
 metadata:
   author: desirecore
-  updated_at: "2026-11-12"
+  updated_at: "2026-11-16"
 ---
 
 # app-install-manager 技能
@@ -304,18 +304,21 @@ parameters:
    parameters:
      url: http://127.0.0.1:<agent-service-port>/api/mcp/install
      method: POST
+     timeout: 300000   # 安装命令 + 安装后连接测试；HttpRequest 缺省只等 30 秒
      body:
        install: <manifest.install 原样>
        connection: <manifest.connection 原样>   # 传入则安装后自动测连接
        catalogAcquisition: <parse-message 输出的 request 原样>
    ```
    返回 `data.steps`（每条命令 exitCode/stdout/stderr）与 `data.connectionTest`。任一命令失败→`success:false`，进入"失败处理"。无 API 可用时用 `bash` 逐条跑 `postInstall`。
+   **必须显式传 `timeout`**：npx / uvx 类 stdio 服务首次启动要先下载运行环境或依赖，较新的客户端给 stdio 连接测试的期限是 120 秒（旧客户端 30 秒），期限后还要等子进程关闭；`HttpRequest` 缺省 30 秒会先于服务端结束，只能看到「请求超时 (30s)」，服务端的测试仍在后台继续。`connectionTest.errorCode` 为 `timeout` 时，较新的客户端会在说明里写明服务端进程从未回复（首次下载依赖未完成的样子）：包管理器通常保留已下载的部分，可以再单独测一次连接（第 5 步）。
 4. **注册到 Agent**（让 MCP 工具下轮可用）：
    ```yaml
    tool: HttpRequest
    parameters:
      url: http://127.0.0.1:<agent-service-port>/api/agents/desirecore/mcp-servers
      method: POST
+     timeout: 150000   # 重装到新版本时端点会先连接验证新包（stdio 最长 120 秒）
      body:
        serverId: <entryId>
        config: <manifest.connection 原样>
@@ -324,7 +327,7 @@ parameters:
    端点锁内 read-modify-write 写入 agent.json 的 `mcp_servers`——**勿手工编辑 agent.json**（绕锁会丢
    并发更新）。catalog 响应的 `data.runtimeServerId` 是服务端签发的复合 ownership key；不得用
    entryId、显示名或调用方值代替。
-5. **连接校验（先校验后回写，强制）**：看第 3 步返回的 `connectionTest.success`，或单独 `POST /api/mcp/test-connection`（body `{connection}`）确认能连通、能列出工具。**只有校验通过才算安装成功**——不要仅凭 postInstall 命令退出码 0 就回写 `installed`（装了包不等于连得上）。
+5. **连接校验（先校验后回写，强制）**：看第 3 步返回的 `connectionTest.success`，或单独 `POST /api/mcp/test-connection`（body `{connection}`，HttpRequest 传 `timeout: 150000`，理由同第 3 步）确认能连通、能列出工具。**只有校验通过才算安装成功**——不要仅凭 postInstall 命令退出码 0 就回写 `installed`（装了包不等于连得上）。
 6. **回写安装记录**（按「回写安装记录的统一方式」）：连接校验通过后，用脚本
    `build-receipt-patch` 原样接收 resolver 的 catalogReceipt candidate，只在其上补服务端 add 返回的
    runtimeServerId，并与 locator.operationId、`status: installed` 在同一次精确 PATCH 中写回原
