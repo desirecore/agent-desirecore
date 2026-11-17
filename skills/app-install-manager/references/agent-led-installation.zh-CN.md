@@ -34,6 +34,15 @@ POST /api/registry/acquisitions/resolve，body 为上述对象。只有 success=
 
 读取说明、检查宿主和已有安装后，自主决定实际方法；有 Compose/脚本就评估使用，没有就根据 README、源码、配置和 SQL 形成方案。在约束内自行排错，无需软件实现统一安装接口。
 
+## 固定发行物：消费已有回执
+
+仅当解析知识包含 knowledge.appRelease 时，使用当前客户端已有 AppAuthoring 固定发布合同，不用下方通用观察 PATCH 代替发布 writer。通过 ToolCatalog 按需读取 release_request/owner_request 的 Schema；任意 README、源码或 SQL 材料仍由 Agent 选择实际方法，不要求统一安装脚本。
+
+- 校验下载归档的已给摘要并在授权目录解包。expectedReleaseDigest 直接取可信 knowledge.appRelease.releaseDigest；prepare_release 会核对清单摘要、文件大小与逐文件 SHA。成功且目标/摘要匹配的原回执可直接使用，不默认读取校验器源码后另写一套规范化算法；缺支持、来源不明或校验失败仍须调查。
+- 准备操作优先评估包内现有入口，保留真实 cwd、数据根和原执行 owner。候选纳管及正常停止按当前工具合同完成，不用独立进程或日志文字冒充。
+- commit_release 的保存事实与 activation 分开。activation=available 时先用 runtime_read 复核；读回仍可用则核验功能，不重复 runtime_start。读回未可用或 activation 未可用时先读原因与可用动作，确需启动才沿原 owner 执行；拒绝、身份冲突或结果未知不构成盲重启的理由。
+- 响应丢失先用原 submissionId 查询提交，或重读实例/运行事实；登记失败只修登记。不要为省调用跳过审批、身份核验或把历史成功当作当前健康。
+
 ## 实际资源占用
 
 副作用前 POST /api/installed-entries/resource-claims：`{material, operation:"claim", resources:["实际绝对安装目录或稳定的容器/项目定位符"]}`。material 使用 resolve 原文。所有任务对同一资源使用同一种定位方式；Windows 盘符目录会规范大小写/分隔符，其他 locator 应保持稳定。共享数据库还要按服务器/库名领取占用，不能只锁软件目录。
