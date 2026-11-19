@@ -34,6 +34,15 @@ Read instructions, inspect the host and existing installations, then select the 
 
 The resolved material includes hostInstanceId to bind the ledger host. Preserve it on subsequent requests. A host mismatch after switching connections must stop the operation; never remove the binding to install on another machine. It validates the target and grants no permission.
 
+## Fixed releases: consume existing receipts
+
+Only when resolved knowledge contains knowledge.appRelease, use the client's existing AppAuthoring fixed-release contract rather than the generic observation PATCH below. Read release_request/owner_request Schema through ToolCatalog as needed. Arbitrary README, source or SQL materials still let the Agent choose the method; no standard installation script is required.
+
+- Verify the supplied archive digest and extract inside an authorized directory. Take expectedReleaseDigest directly from trusted knowledge.appRelease.releaseDigest. prepare_release checks the manifest digest, file sizes and each file SHA. Reuse a successful original receipt matching the target/digest; do not routinely read validator source and recreate its canonicalization algorithm. Missing support, uncertain provenance or failed checks still require investigation.
+- Evaluate existing package entry points for preparation. Preserve the actual cwd, data root and original execution owner. Enroll and normally stop candidates through the current tool contract; independent processes or log text are not owner receipts. Native contracts replay the accepted startup command: first select and retain the entry point, cwd, port, data root and environment; do not reselect ports or repeat one-time preparation inside that replayable command.
+- commit_release reports saving and activation separately. When activation=available, recheck with runtime_read; if still available, verify actual function without repeating runtime_start. If the readback or activation is unavailable, read the reason and available actions before choosing a necessary owner start. Denial, identity conflicts and unknown outcomes do not justify blind restarts.
+- After a lost response, query the original submissionId or reread installation/runtime facts. Repair recording failures without repeating installation. Do not save calls by skipping approval, identity checks or treating historical success as live health.
+
 ## Resource ownership
 
 Before side effects POST /api/installed-entries/resource-claims with `{material, operation:"claim", resources:["actual absolute installation directory or stable container/project locator"]}`. Use resolved material unchanged. All tasks must use consistent locators. Windows drive paths normalize case/separators; other locators must be stable. Claim shared databases by server/database identity too, not only the software directory.
