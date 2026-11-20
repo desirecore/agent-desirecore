@@ -1,7 +1,7 @@
 ---
 name: 应用安装管理
-description: 经目录快照或已安装生命周期收据 resolver 授权后安装/卸载/启停 docker-app、native-app 原生应用与 mcp/http-api 服务（docker-app：解析 manifest/installGuide → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：使用 resolver 返回的 install/connection → 注册到 Agent → 连接验证 → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
-version: "1.4.2"
+description: 经目录快照或已安装生命周期收据 resolver 授权后安装/卸载/启停 docker-app、native-app 原生应用与 mcp/http-api 服务（docker-app：解析 manifest/installGuide → 跑 docker compose → 健康校验 → 回写安装状态；mcp 服务：使用 resolver 返回的 install/connection 执行安装与连接测试 → 已连通或需授权才注册到 Agent → 回写状态）。Use when 用户要求"安装 Dify/n8n 等应用"、"安装某 MCP 服务"、"卸载某应用/服务"、"启动/停止/重启某应用"，或安装/卸载请求以"请安装/卸载 {名称} 到/从 {设备}"形式到达。
+version: "1.5.0"
 type: procedural
 risk_level: high
 status: enabled
@@ -9,7 +9,7 @@ disable-model-invocation: true
 tags: [installation, docker, mcp, registry, app-management]
 metadata:
   author: desirecore
-  updated_at: "2026-11-16"
+  updated_at: "2026-11-20"
 ---
 
 # app-install-manager 技能
@@ -31,7 +31,7 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
 覆盖三类目标：
 - **native-app**：DesireCore Control 等宿主机原生应用，按固定制品与安装指南安装；只供外部客户端使用的 MCP 不注册到本 Agent。
 - **docker-app**：Dify / n8n / RagFlow 等，走 docker compose 部署。
-- **mcp / http-api 服务**：MCP 服务器（按 registry 的 `install` 字段安装 + 注册到 Agent）与 HTTP API 服务（仅登记安装记录，无自动化部署动作）。
+- **mcp / http-api 服务**：MCP 服务器（按 registry 的 `install` 字段安装，连接测试已连通或需授权后注册到 Agent）与 HTTP API 服务（仅登记安装记录，无自动化部署动作）。
 
 使用场景：
 - 用户说"安装 Dify""把 n8n 装到本机""安装某 MCP 服务"
@@ -43,10 +43,12 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
 ### 关键路径与数据
 
 - 当前目录快照解析：`POST http://127.0.0.1:<agent-service-port>/api/registry/acquisitions/resolve`
-- 机器消息解析与响应复核：`<本技能目录>/scripts/registry-catalog-acquisition.mjs`
+- 机器消息解析与响应复核：`<本技能目录>/scripts/registry-catalog-acquisition.mjs`（含 MCP 注册响应判定
+  `evaluate-register-response` 与操作归属复核 `inspect-operation`）
 - 安装记录：`<DesireCore根目录>/config/installed-entries.json`
   （`<根目录>` 为你的 AgentFS 根，生产为 `~/.desirecore`，开发隔离为 `~/.desirecore-dev`，以自我感知里的实际根目录为准）
-- agent-service API：`http://127.0.0.1:<agent-service-port>`（端口见自我感知；mcp 服务安装/注册用）
+- agent-service API：`http://127.0.0.1:<agent-service-port>`（端口见自我感知；mcp 服务安装、连接测试、注册，以及按
+  runtimeServerId 回滚或删除残留用）
 
 ### 执行前协议：精确机器消息 → ownership / resolver（强制）
 
@@ -99,7 +101,9 @@ DesireCore 的安装是**委派式**的——界面发送自然语言说明加�
    `registry_acquisition_client_upgrade_required`、`registry_acquisition_config_mismatch`、
    `registry_acquisition_install_guide_unavailable`、`registry_acquisition_receipt_missing`、
    `registry_acquisition_ownership_mismatch`；同时保留通过有界校验的 reasons。任何非 200、
-   连接失败、非 JSON 或身份/快照/manifest 不一致都禁止执行命令，并先完成强制结算。
+   连接失败、非 JSON 或身份/快照/manifest 不一致都禁止执行命令，并先完成强制结算。本条只管
+   resolver（含 `/api/mcp/install` 执行命令前的同一准入）；注册端点在 postInstall 执行之后返回的
+   409 按 mcp 安装流程第 4 步判定，不套用执行前结算。
 5. **禁止 fallback**：不得读取任何本地 Registry 条目、改用同 ID 其它来源或沿用旧 resolver 响应。
    resolver/ownership 只决定本次读取与精确归属，不新增安装账本，也不替代工具审批、健康校验、
    回滚和终态收据。
@@ -157,10 +161,12 @@ operationId PATCH `installed`，省略 receipt/version，让服务端保留旧�
 
 | status | 谁写入 | 你的退出动作 |
 |--------|--------|-------------|
-| `installing` | 界面首装乐观态 | 成功→`installed`；失败→`failed` |
+| `installing` | 界面首装乐观态 | 成功→`installed`（mcp 连接测试为需授权 `needs_auth` 也算成功：已注册，是否还要授权看下一轮工具列表）；失败→`failed` |
 | `reinstalling` | 界面重装乐观态（此前已 `installed`） | 成功→`installed`；失败但**旧版本仍在运行**→回写 `installed` 并说明重装失败；失败且应用已不可用→`failed` |
 | `uninstalling` | 界面卸载乐观态 | 成功→`uninstalled`（或移除条目）；**失败→回写 `installed`** 并向用户说明失败原因 |
 | `installed` / `failed` / `uninstalled` | 你回写的终态 | — |
+
+本次操作已被接替（「操作归属复核」为 `superseded`）时不写任何状态：记录已归新操作所有。
 
 **后端派生规则（务必理解）**：只在 `installed` 派生 docker-app 的服务；在中间态（`installing`/`reinstalling`/`uninstalling`）**保留**既有派生；仅在终态（`failed`/`uninstalled`/条目移除）**清理**派生。因此：
 - 重装/卸载期间派生服务不会被误删（旧容器还在跑时目录不抖动）；
@@ -182,9 +188,44 @@ UI 在发消息前已经写入中间态。locator 成功后，完整解析失败
 3. settlement 非空时，按“回写安装记录的统一方式”PATCH 它给出的精确三元组和 status：
    `installing → failed`，`reinstalling → installed`，`uninstalling → installed`，并原样携带
    settlement.operationId。结算前后都不得执行
-   Docker、包管理或安装脚本。settlement:null 时报告有界原因并停止，不按数组顺序、名称或设备猜测。
+   Docker、包管理或安装脚本。settlement:null 时先做「操作归属复核」：`superseded` 按被接替处理；
+   其余报告有界原因并停止，不按数组顺序、名称或设备猜测。
 4. 工具审批被拒或用户在对话中叫停也是正常停止而非悬空：首装回 `failed`，重装/卸载恢复
    `installed`。resolver 错误码与 reasons 在完成结算后原样说明。
+
+### 操作归属复核（inspect-operation）
+
+较新的客户端允许用户在界面「重试」卡住一段时间的 `installing`/`reinstalling` 记录：界面用新的 operationId
+替换这条记录（服务端不替换仍有在途 `/api/mcp/install` 或注册请求的操作），账本里不会留下旧操作的终态。
+只有 install 与注册请求在服务端执行期间受在途保护；其余任何时间（install 返回后到发起注册之前、复测、注册返回
+之后、等待审批、PATCH 与 DELETE）都可能被接替。以下时点先复核本次操作是否仍持有记录：
+
+- 任何回滚之前，以及删除残留之前；
+- PATCH 返回 409 `catalog_operation_mismatch`，或 PATCH 没有响应（见「回写安装记录的统一方式」）；
+- `/api/mcp/install` 或注册返回不带 reasons 的 409 `registry_acquisition_ownership_mismatch`；
+- `plan-settlement` 返回 settlement:null。
+
+`GET /api/installed-entries` 后，把 `{ "locator": <locator>, "entries": <响应的 data.entries> }` 交给脚本：
+
+```bash
+node "<本技能目录>/scripts/registry-catalog-acquisition.mjs" inspect-operation
+```
+
+脚本按 sourceId+entryId+operation.deviceId 找记录：
+
+- `current`：恰好一条且 operationId 是本次的，带 status。按原流程结算。`mayRollback` 只在同时满足时为 true：
+  输入带了 `"runtimeServerId": <注册判定输出的 runtimeServerId>`；首装且记录仍为 `installing`；没有别的记录
+  （任一状态不是 `uninstalled`，含 `failed`）在回执里持有这个键。回滚前必须重新跑一次带 runtimeServerId 的
+  复核，不沿用为其它原因做的复核结果。
+- `superseded`：恰好一条但 operationId 不同，本次已被界面重试或新指令接替，记录归新操作所有。不结算、不回滚、不撤销已执行的命令和已注册的配置、不换用新的 operationId、不调用任何 PUT（带不带 `retryOf` 都不行）；向用户说明本次已被新操作接替，结果以新操作为准。
+- `missing`（没有记录）/ `ambiguous`（多条）：都不得结算或回滚，报告并停止。
+
+旧客户端不会在操作进行中替换意图，这条规则在旧客户端上没有副作用。复核只是弱判定，复核之后仍可能被替换。
+PATCH 与注册绑定 operationId，被替换时服务端回 409；回滚用的无信封 DELETE 不绑定 operation，只看有没有活回执
+持有这个键（新意图只有基础回执，不算持有者），被替换时服务端不会拦。所以复核为 `current` 后立刻发回滚或删除
+残留的 DELETE，中间不插入等待或询问。同一会话里收到同一 sourceId+entryId+deviceId、operationId 不同的新指令，也说明旧操作
+已被接替：旧操作照上面停止，新指令从它自己的机器消息重新走执行前协议，不沿用旧操作的 resolver 响应、
+candidate、runtimeServerId 或连接测试结论。
 
 ### 授权与审批
 
@@ -192,7 +233,9 @@ UI 在发消息前已经写入中间态。locator 成功后，完整解析失败
 安装/卸载，MCP 服务还在设备选择处看到了完整命令与风险说明（ADR-349 决策 1）。不在对话里再确认
 一次。后续 HttpRequest、`bash` 等调用按本 Agent 当前审批档位和「总是允许」规则审批，全部放行时不再
 询问；审批被拒按 `pre_execution` 结算。只有操作超出本次机器消息的范围（例如删除用户数据、改用其它
-端口、停掉不属于本应用的进程）时，才向用户说明并询问。
+端口、停掉不属于本应用的进程）时，才向用户说明并询问。MCP 注册冲突留下的残留键（ADR-371 的两个
+reasons）是否删除、是否在编辑器里启用一份停用的本机配置，都属于超出范围的操作：先说明并询问，用户
+选择之前只结算，不删除、不启用。
 
 ### 回写安装记录的统一方式（端点优先，404 降级）
 
@@ -205,6 +248,7 @@ tool: HttpRequest
 parameters:
   url: http://127.0.0.1:<agent-service-port>/api/installed-entries/<entryId>/<deviceId>
   method: PATCH
+  timeout: 120000   # 带 receipt 的 PATCH 会在服务端重跑 resolver；HttpRequest 缺省只等 30 秒
   body:
     sourceId: <locator 中的精确 sourceId>
     operationId: <locator.operation.operationId>
@@ -215,11 +259,22 @@ parameters:
 - `200` → 回写成功，前端自动刷新，**无需**再手动改文件。
 - `400` → status/sourceId 非法，检查取值。
 - `404 entry_not_found` → 该条中间态记录不存在（界面未写/已被清理）。**不要**重试或伪造记录；跳过并一句话提示用户重发指令即可。
-- receipt PATCH 的 `catalog_receipt_*` / `catalog_operation_mismatch` /
-  `catalog_status_transition_invalid` / `invalid_operation_id` 400/409
-  表示候选非法、ownership/CAS/runtime/lifecycle/operation 不一致；
-  不得删字段、重建 receipt 或换 snapshot 重试。App 停止并按失败语义结算；MCP 先回滚刚注册的
-  runtimeServerId，再结算。
+- receipt PATCH 的 `catalog_receipt_*` / `catalog_status_transition_invalid` / `invalid_operation_id`
+  400/409，以及重跑 resolver 给出的 `registry_acquisition_*`，表示候选非法、
+  ownership/CAS/runtime/lifecycle/operation 不一致或目录已前进；
+  不得删字段、重建 receipt 或换 snapshot 重试。App 停止并按失败语义结算；MCP 按「mcp 注册后的
+  回滚与残留出口」的回滚规则判断能否回滚，再结算。
+- `409 catalog_operation_mismatch` → 账本里这条记录的 operationId 已不是本次（较新的客户端上可能已被界面
+  重试接替）。先做「操作归属复核」：`superseded` 时不结算、不回滚；`current` 才继续原流程。
+- **PATCH 没有响应**（请求超时或连接中断）→ 写入可能已生效，也可能仍在服务端执行。先做「操作归属复核」：
+  `current` 且 status 已是本次要写的终态（带 receipt 的，还要求记录里 catalogReceipt 的 releaseVersion 与
+  runtimeServerId 和本次 PATCH 的一致）→ 本次回写已生效，按这个终态汇报（写的是 `failed` 就汇报安装失败），
+  不回滚也不再结算；`superseded` → 按被接替处理；仍是中间态 → 用完全相同的请求体（同一 operationId、同一
+  receipt）再发一次 PATCH，按这次的响应处理（已落盘时同状态重放返回 200）。拿到明确的拒绝码之前不回滚、
+  不改写成别的状态；再次没有响应就停止，如实说明记录可能仍停在中间态，请用户稍后在界面查看或重试。
+- PATCH 一律带 sourceId：不带时操作不一致在旧客户端上落成 500 `installed_entry_write_failed`，看不出
+  是被接替。拒绝码可能在 `error`（安装记录路由）或 `errorCode`（PATCH installed 重跑 resolver，如
+  `registry_acquisition_snapshot_stale`）字段，两个都看。
 - **连接失败 / 路由 404（旧客户端无此端点）** → catalog lifecycle 回写不得降级 file-write；否则会
   绕过 operationId 和 receipt CAS。停止并报告客户端不兼容。
 
@@ -298,7 +353,8 @@ parameters:
 2. **使用本次授权定义**：只用 resolver 响应的 manifest/install/connection（`install` 含 method、
    packageName、command、args、postInstall；`connection` 含 transport/command/args/url/headers）。
    不读取或合并本地同 ID 条目。
-3. **执行安装**（优先走 API，逐条跑 `postInstall` 命令 + 可选连接测试）：
+3. **执行安装并做连接测试**（优先走 API，逐条跑 `postInstall` 命令 + 安装后连接测试；连接测试的结论决定第 4 步
+   是否注册）：
    ```yaml
    tool: HttpRequest
    parameters:
@@ -310,9 +366,51 @@ parameters:
        connection: <manifest.connection 原样>   # 传入则安装后自动测连接
        catalogAcquisition: <parse-message 输出的 request 原样>
    ```
-   返回 `data.steps`（每条命令 exitCode/stdout/stderr）与 `data.connectionTest`。任一命令失败→`success:false`，进入"失败处理"。无 API 可用时用 `bash` 逐条跑 `postInstall`。
-   **必须显式传 `timeout`**：npx / uvx 类 stdio 服务首次启动要先下载运行环境或依赖，较新的客户端给 stdio 连接测试的期限是 120 秒（旧客户端 30 秒），期限后还要等子进程关闭；`HttpRequest` 缺省 30 秒会先于服务端结束，只能看到「请求超时 (30s)」，服务端的测试仍在后台继续。`connectionTest.errorCode` 为 `timeout` 时，较新的客户端会在说明里写明服务端进程从未回复（首次下载依赖未完成的样子）：包管理器通常保留已下载的部分，可以再单独测一次连接（第 5 步）。
-4. **注册到 Agent**（让 MCP 工具下轮可用）：
+   返回 `data.steps`（每条命令 exitCode/stdout/stderr）与 `data.connectionTest`。无 API 可用时用 `bash` 逐条跑
+   `postInstall`，再按下面的复测做连接测试。
+   **必须显式传 `timeout`**：npx / uvx 类 stdio 服务首次启动要先下载运行环境或依赖，较新的客户端给 stdio 连接测试的期限是 120 秒（旧客户端 30 秒），期限后还要等子进程关闭；`HttpRequest` 缺省 30 秒会先于服务端结束，只能看到「请求超时 (30s)」，服务端的测试仍在后台继续。`connectionTest.errorCode` 为 `timeout` 时，较新的客户端会在说明里写明服务端进程从未回复（首次下载依赖未完成的样子）：包管理器通常保留已下载的部分，可以再单独测一次连接（见下方复测）。
+
+   先按响应分类，再决定是否注册：
+   - HTTP 200 且 `success:false`：某条 postInstall 失败，响应里没有 connectionTest。不注册，按「失败处理」的
+     postInstall 失败结算：首装 `failed`；重装时 agent.json 未被替换，旧版本仍可用就用同一 operationId PATCH
+     `installed`、省略 receipt/version，确认旧版本已损坏才回写 `failed`。
+   - 400/404/409（带 `registry_acquisition_*`，或 400 请求体不合法）：服务端在执行任何命令之前拒绝，按
+     `resolver` 阶段做执行前结算；不带 reasons 的 409 `registry_acquisition_ownership_mismatch` 先做「操作归属
+     复核」。
+   - HTTP 200 且 `success:true`：只说明命令都成功，连通性看 `data.connectionTest`：
+     - `connectionTest.success === true`：**已连通**，进入第 4 步。
+     - `connectionTest.status === 'needs_auth'`：**需授权**（远端服务端要求 OAuth，`errorCode` 为
+       `auth_required`）。照常进入第 4 步注册：授权入口（`<runtimeServerId>__authenticate` 工具）要注册并启用后
+       才出现，不注册或回滚都会让用户无法授权。判据只认 `status === 'needs_auth'`；只有
+       `errorCode: 'auth_required'`、没有 status 的是普通失败。连接测试不使用已保存的 OAuth 凭据，已授权过的
+       服务端也会测出需授权；重装或替换已有配置时它不代表授权已失效（汇报见第 7 步）。
+     - `errorCode` 为 `timeout` 或 `cancelled`，或响应里没有 connectionTest：可以复测一次（下方），复测结果按
+       同样的分类处理。旧客户端（10.0.196 之前）的连接测试失败既不带 `errorCode` 也不带 `status`，期限只有
+       30 秒，首次下载依赖常常超时：`success === false` 且两者都没有时同样复测一次。
+     - 其它失败：**不注册**。首装用同一 operationId PATCH `{sourceId,operationId,status:failed}`；重装用同一
+       operationId PATCH `installed`，省略 receipt/version（旧版本仍在用）。向用户说明 `errorCode` 与 `error`
+       摘要；`credential_unavailable` 时提示先配置所需凭据，再从商店重新安装。
+   - install 请求本身超时、没有响应：命令可能仍在服务端执行（每条最长 300 秒；请求断开后的连接测试会按
+     `cancelled` 跳过），也可能已经失败，结果无从确认。不重放 install，也不注册：按失败语义结算（首装 `failed`；
+     重装用同一 operationId 恢复 `installed`、省略 receipt/version），说明结果不明、命令可能仍在后台执行，请几分钟
+     后到商店重新安装。只有 `manifest.install` 没有 postInstall 命令时，超时的只可能是连接测试，可以直接复测，结论
+     按上面分类。
+
+   复测（`POST /api/mcp/test-connection`，只测连接，不带 catalogAcquisition，不重跑安装命令）：
+   ```yaml
+   tool: HttpRequest
+   parameters:
+     url: http://127.0.0.1:<agent-service-port>/api/mcp/test-connection
+     method: POST
+     timeout: 150000   # stdio 连接测试最长 120 秒，另加关闭子进程的时间
+     body:
+       connection: <与第 3 步相同的 connection>
+   ```
+   HTTP 200 且 `data.status === 'connected'` 为已连通（工具数是 `data.toolCount`）；HTTP 200 且
+   `data.status === 'needs_auth'` 为需授权（授权指引在 `data.message`）；400（`invalid_config`）与 500（其它
+   `errorCode`，说明在 `error`）为失败；复测请求再次超时也按失败处理。复测没有服务端在途保护，期间若被界面重试
+   接替，第 4 步会收到不带 reasons 的 409。
+4. **注册到 Agent**（只在第 3 步结论为已连通或需授权时；让 MCP 工具下轮可用）：
    ```yaml
    tool: HttpRequest
    parameters:
@@ -324,21 +422,109 @@ parameters:
        config: <manifest.connection 原样>
        catalogAcquisition: <parse-message 输出的 request 原样>
    ```
-   端点锁内 read-modify-write 写入 agent.json 的 `mcp_servers`——**勿手工编辑 agent.json**（绕锁会丢
-   并发更新）。catalog 响应的 `data.runtimeServerId` 是服务端签发的复合 ownership key；不得用
-   entryId、显示名或调用方值代替。
-5. **连接校验（先校验后回写，强制）**：看第 3 步返回的 `connectionTest.success`，或单独 `POST /api/mcp/test-connection`（body `{connection}`，HttpRequest 传 `timeout: 150000`，理由同第 3 步）确认能连通、能列出工具。**只有校验通过才算安装成功**——不要仅凭 postInstall 命令退出码 0 就回写 `installed`（装了包不等于连得上）。
-6. **回写安装记录**（按「回写安装记录的统一方式」）：连接校验通过后，用脚本
-   `build-receipt-patch` 原样接收 resolver 的 catalogReceipt candidate，只在其上补服务端 add 返回的
+   端点锁内 read-modify-write 写入 agent.json 的 `mcp_servers`（首装与普通替换写入 `enabled: true`；目录重装到
+   新版本、stdio 且方法为 npx/uvx 时保留原配置的启用状态）——**勿手工编辑 agent.json**（绕锁会丢并发更新）。catalog 响应的 `data.runtimeServerId` 是服务端签发的复合 ownership key；
+   不得用 entryId、显示名或调用方值代替。
+   不手工解析响应：把 `{ "expected": <parse-message 输出的 request>, "status": <HTTP状态>, "body": <响应JSON> }`
+   交给脚本判定：
+
+   ```bash
+   node "<本技能目录>/scripts/registry-catalog-acquisition.mjs" evaluate-register-response
+   ```
+
+   - `registered:true`：记下输出的 `runtimeServerId`、`reclaimed` 与 `rollbackAllowed`，进入第 5 步。
+     `reclaimed: true` 表示服务端收回了这个键上原有的同一服务端配置（首装失败留下的残留，或同一 operation
+     重放注册）。合并是按顶层键覆盖：目录连接配置没给出的键（cwd、sampling，以及目录没给出时的 env、headers、
+     oauth）照样沿用；目录给出的键改回目录值，env、headers 是整个对象换成目录值，不逐项保留。之后任一步失败
+     都不回滚。
+   - `residue` 非空：注册 409 带 ADR-371 的 reasons，键上有一份不能收回的无主配置，按「mcp 注册后的回滚与
+     残留出口」处理。
+   - 其它（`registered:false` 且 `residue:null`）：没有可回滚的注册，不删除任何键，也不从 agent.json 按
+     entryId 或后缀猜键。`errorCode` 为 `registry_acquisition_ownership_mismatch` 且不带 reasons 时先做「操作
+     归属复核」；其余按失败语义结算：首装 `failed`，重装用同一 operationId 恢复 `installed`、省略
+     receipt/version，并说明错误码。500 时 agent.json 可能已被写入，但无法证明是本次写的，同样不删。注册请求
+     超时、没有响应时也按这里处理，不回滚。
+   - 兼容：旧客户端（ADR-371 之前）注册 200 不带 `reclaimed`、409 不带 `reasons`，脚本据此给出
+     `reclaimed:false` 与 `residue:null`，即按原规则处理：首装注册成功后的失败可以回滚，409 结算后停止。
+   - registry:official 的条目在已有回执声明了裸键、且该键已在 agent.json 里时会注册到裸 entryId：脚本与卸载判定
+     一致接受它，但它一定是替换已有配置，`rollbackAllowed` 恒为 false；随后 `build-receipt-patch` 只接受复合键
+     会拒绝，按第 6 步的失败处理，不回滚。重装走到这里永远完成不了（服务端回写同样只接受复合键），如实说明。
+5. **确认连接结论（注册之后不再重测）**：按第 3 步（或复测）的结论走：已连通 → 第 6 步成功路径；需授权 →
+   同样走第 6 步成功路径（配置已注册并启用，授权在第 7 步引导），不得按「连接测试失败」处理。**只有连接测试
+   已连通或需授权才算安装成功**——不要仅凭 postInstall 命令退出码 0 就注册或回写 `installed`（装了包不等于
+   连得上）。
+6. **回写安装记录**（按「回写安装记录的统一方式」）：用脚本
+   `build-receipt-patch` 原样接收 resolver 的 catalogReceipt candidate，只在其上补第 4 步判定输出的
    runtimeServerId，并与 locator.operationId、`status: installed` 在同一次精确 PATCH 中写回原
    installed-entry，PATCH version 取 candidate.releaseVersion；禁止从
-   request snapshot/manifest 自建或替换 lifecycle。缺 candidate/runtimeServerId、candidate 被篡改或
-   receipt CAS 回写失败时不得宣布成功，先按精确 runtimeServerId 回滚刚注册的 MCP，再按失败语义
-   结算。连接校验失败 → 首装 `failed`；重装失败但旧配置仍可用 → 只带同一 operationId 恢复
-   `installed`，省略 receipt/version/pending。
-7. **回报用户**：总结安装结果 + 发现的工具数（成功）或失败原因摘要（失败）。
+   request snapshot/manifest 自建或替换 lifecycle。需授权的首装同样回写 `installed`（已注册、待授权）。
+   缺 candidate/runtimeServerId、candidate 被篡改、`build-receipt-patch` 拒绝或 receipt CAS 回写失败时不得
+   宣布成功：按「mcp 注册后的回滚与残留出口」的回滚规则判断能否回滚，再按失败语义结算——首装 `failed`；
+   重装只带同一 operationId 恢复 `installed`，省略 receipt/version/pending，并如实说明：注册已把 agent.json
+   里的配置换成新定义，安装记录仍是旧版本，界面可能继续提示更新。
+7. **回报用户**：总结安装结果 + 发现的工具数（已连通）或失败原因摘要（失败）。另外几种情况：
+   - 需授权：说明已注册并启用。连接测试不使用已保存的 OAuth 凭据，所以是否还要授权以下一轮的工具列表为准。
+     授权入口的注册名是 `<runtimeServerId>__authenticate`，但复合键已占 30 个字符，条目 ID 较长或含 `.` 时模型看到
+     的是截短加哈希的派生名，可能不含 authenticate，所以按描述认：描述以 `MCP server "<runtimeServerId>"` 开头、
+     说明需要 OAuth 认证的那个工具就是授权入口。出现它就是还要授权，授权前工具数为 0，按 `connectionTest.error`
+     （复测为 `data.message`）的指引说明，用户同意后调用它完成登录，是否现在授权由用户决定；没有它而出现了该服务
+     的其它工具，说明沿用了原有授权。首装新注册（键上原来没有配置）通常要授权；
+     重装、`reclaimed: true` 或替换了已有配置时，服务端地址与 OAuth 配置没变就会沿用原有授权，不要直接说还要授权。
+   - 收回（`reclaimed: true`）：说明沿用了这个键上原有的同一服务端配置；目录没给出的键（cwd、sampling 等）照旧，
+     目录给出的键（含整个 env、headers 对象）已改回目录值。
+   - 残留待确认：说明原因（reasons）、涉及的 runtimeServerId 与可选出路，等用户选择（见「mcp 注册后的回滚与
+     残留出口」）。
+   - 被接替（`superseded`）：说明本次已被界面重试或新指令接替，本次没有回写安装记录、也没有回滚，已执行的
+     命令与已注册的配置原样保留，结果以新操作为准。
 
 **http-api 服务**（manifest.type=`http-api`，无 `install` 字段、界面也无自动化安装动作）：按「回写安装记录的统一方式」维护回写（`installing`→`installed`、`uninstalling`→`uninstalled`/失败回 `installed`），明确告知用户该类服务无本地部署步骤、只是登记可达性。
+
+### mcp 注册后的回滚与残留出口
+
+**回滚规则**（注册 200 之后任一步失败，例如 `build-receipt-patch` 拒绝、receipt PATCH 冲突）：
+
+只有同时满足以下条件才回滚：本次 action 为 `install`；注册 200 且 `evaluate-register-response` 给出
+`rollbackAllowed:true`；回滚前「操作归属复核」（输入带上注册判定输出的 runtimeServerId）为 `current` 且
+`mayRollback:true`。复核后立刻回滚，中间不等待、不询问。回滚用无信封 `DELETE`，路径取注册判定输出的 runtimeServerId，不带任何 query，不按 entryId：
+
+```yaml
+tool: HttpRequest
+parameters:
+  url: http://127.0.0.1:<agent-service-port>/api/agents/desirecore/mcp-servers/<注册判定输出的 runtimeServerId>
+  method: DELETE
+```
+
+- 200 → 回滚完成（`removed:false` 只说明键已不在）；409 `registry_acquisition_ownership_mismatch` → 别的设备或
+  记录仍持有这个键，保留配置并向用户说明。之后都按失败语义结算 `failed`。
+- `reclaimed: true`（收回）一律不回滚：那是用户原有的配置，保留即可，下次首装重试照样收回。重装、`superseded`、注册非 200 或请求超时也一律不回滚。
+- 回执持有的普通替换也不带 `reclaimed`：别的记录在回执里持有这个键（含 `failed`）时，键上原本就有配置，
+  这种情况不回滚（复核输入带上 runtimeServerId 时输出 `mayRollback:false`）；持有记录都已 `failed` 时无信封
+  DELETE 不会 409，回滚会删掉替换前就有的配置。
+
+**残留出口**（第 4 步判定输出 `residue` 非空，只会出现在首装）：
+
+1. 先按「回写安装记录的统一方式」用同一 operationId PATCH `{sourceId,operationId,status:failed}` 结算本次首装。
+   返回 409 `catalog_operation_mismatch` 时先做「操作归属复核」，`superseded` 就停止，不再询问。
+2. 向用户说明原因与涉及的键（`residue.runtimeServerId`）：
+   - `unowned_runtime_config_differs`：键上的配置指向别的服务端（用户改过的残留，或目录升版后旧固定版本参数），
+     出路只有删除或保留。
+   - `unowned_runtime_config_disabled_local_keys`：键上是同一服务端，但当前停用（`enabled:false`，或严格能力模式
+     下没写 enabled）且带本机改动（多出、改过或删掉的键），出路是删除、到编辑器启用或保留。
+3. 询问用户选哪条（删除或启用用户配置超出本次机器消息的范围，见「授权与审批」），再按选择执行：
+   - **删除**：用户回答可能隔了很久，期间用户也可能已在商店重新安装。先重新 `GET /api/installed-entries` 做
+     「操作归属复核」：只有 `current` 且 status 为 `failed` 才继续；`superseded` 说明新操作可能正在注册或收回这个
+     键（新意图只有基础回执，DELETE 不会被拦），停止并说明结果以新操作为准，不删除；其余结果报告后停止。复核后
+     立刻发无信封 `DELETE /api/agents/desirecore/mcp-servers/<residue.runtimeServerId>`，不带任何 query，不按
+     entryId，也不从 agent.json 猜键。200（`removed:true`，或 `removed:false` 表示已不在）→ 请用户到「应用」页
+     该服务的详情里重新点「安装」（产生新的 operation）。409 → 别的设备或记录仍持有这个键，停下说明，不再尝试。
+   - **启用**（仅 `unowned_runtime_config_disabled_local_keys`）：引导用户在「资源管理器」里打开 DesireCore 的
+     「核心配置」（agent.json；处于预览时先点「编辑」），切到「表单」，展开「工具与能力」中的「MCP Servers」，
+     找到 `residue.runtimeServerId` 这一条，勾选条目里标为 `enabled` 的复选框（上方说明为「是否启用此 MCP
+     server」），再点页面顶部的「保存」；之后到「应用」页重新点「安装」，
+     服务端会收回这份启用中的配置（目录没给出的键沿用，目录给出的键改回目录值，env、headers 整个对象替换）。
+   - **保留**：结束，不做任何改动；用户以后可以自己删除，或启用后重新安装。
+4. Agent 不得自己生成 operationId、不得调用 PUT 写意图、不得手改 agent.json、不得不带 catalogAcquisition
+   注册来绕过归属；重新安装只由用户在界面发起。
 
 ### mcp / http-api 服务卸载流程
 
@@ -382,8 +568,9 @@ parameters:
 | resolver 400/404/409/连接失败 | 保留真实 `registry_acquisition_*` 与有界 reasons，先强制结算，再停止；禁止 Docker/bash/包管理和同 ID fallback |
 | resolver 200 但身份/快照/manifest/指南不一致 | 视为不可信响应，先强制结算，不执行任何生命周期副作用 |
 | resolver 200 缺失/篡改 catalogReceipt 或 App lifecycle guide 超过 64 KiB | 拒绝执行；禁止本地补建/截断 lifecycle，先强制结算 |
-| receipt PATCH CAS/runtime/lifecycle 冲突 | 禁止修改候选绕过；MCP 回滚注册后结算，App 按失败语义结算 |
+| receipt PATCH CAS/runtime/lifecycle 冲突 | 禁止修改候选绕过；MCP 只在首装、`rollbackAllowed:true`，且操作归属复核为 `current`、`mayRollback:true` 时用无信封 DELETE 回滚，再结算；App 按失败语义结算 |
 | operationId 缺失/畸形或旧消息重放 | 失败关闭；不得用当前 installed-entry 的新 operationId 替换旧消息，禁止执行或结算新意图 |
+| **本次操作已被接替**（操作归属复核为 `superseded`） | 不结算、不回滚、不撤销已执行的命令、不换 operationId、不调用 PUT；说明本次已被新操作接替，结果以新操作为准 |
 | 工具审批被拒或用户叫停 | 按 `pre_execution` 结算：首装回 `failed`，重装/卸载回 `installed`，不得遗留中间态 |
 | docker 未运行 | 提示用户启动 Docker；首装回 `failed`，重装回 `installed` |
 | 端口被占用 | 列出占用进程，建议换端口或停占用，征求用户意见 |
@@ -391,7 +578,14 @@ parameters:
 | 健康校验超时 | 提示"可能仍在启动"，给出查看日志的命令；如确认失败回写 `failed` |
 | **卸载失败**（容器/配置未能移除，应用仍可用） | 回写 **`installed`**（不是 `failed`、不留 `uninstalling`），向用户说明卸载失败原因与排查建议 |
 | **重装失败** | 旧版本仍在运行→回写 **`installed`** 并说明重装失败；旧版本已损坏不可用→`failed` |
-| **mcp postInstall 失败** | 回写 `failed`，附失败命令的 stderr/exitCode 摘要；不注册到 Agent |
+| **mcp postInstall 失败** | 不注册到 Agent；首装回写 `failed`；重装时旧版本仍可用就用同一 operationId 恢复 `installed`（省略 receipt/version），确认旧版本已损坏才回写 `failed`；附失败命令的 stderr/exitCode 摘要 |
+| **mcp 连接测试失败且不是 needs_auth**（含复测仍失败） | 不注册；首装回写 `failed`，重装同一 operationId 恢复 `installed`（省略 receipt/version）；说明 errorCode 与 error 摘要，`credential_unavailable` 时提示先配置凭据再从商店重试 |
+| **mcp 连接测试 needs_auth** | 照常注册并回写 `installed`；下一轮出现授权工具时再引导用户调用它完成登录（重装或替换已有配置时可能沿用原有授权）；不按失败处理、不回滚 |
+| **mcp 注册 409 带 `unowned_runtime_config_differs` / `unowned_runtime_config_disabled_local_keys`** | 先结算首装 `failed`，再说明并询问：删除（无信封 DELETE 409 响应里的 runtimeServerId）、启用（仅后者）或保留；重新安装由用户在商店发起 |
+| **mcp 注册 409 不带 reasons** | 先做操作归属复核；`current` 时按失败语义结算后停止。不删除任何键，不从 agent.json 猜键 |
+| **回滚的无信封 DELETE 返回 409** | 别的设备或记录仍持有这个键：保留配置并说明，不再重试 DELETE；记录仍是 `installing`，照常用同一 operationId PATCH `failed` 结算（返回 409 `catalog_operation_mismatch` 时先做操作归属复核） |
+| **残留删除的无信封 DELETE 返回 409** | 别的设备或记录仍持有这个键：保留配置，停下说明，不再尝试（本次首装已在残留出口第 1 步结算） |
+| **注册后失败且 `reclaimed: true`** | 不回滚、保留收回的配置，按失败语义结算 `failed` |
 | **mcp 卸载端点 404**（旧客户端无 DELETE mcp-servers 能力） | 回写 `installed`（不是 `uninstalled`），告知用户升级客户端后重试 mcp 卸载；不手工改 agent.json |
 
 ### 边界与安全
@@ -405,8 +599,15 @@ parameters:
 - 破坏性操作与 Agent 配置写入由工具审批按当前档位把关，全部放行时不再询问；只有操作超出本次机器
   消息的范围时，才向用户说明并询问（见「授权与审批」）。
 - 回写状态优先用 PATCH 端点（自带 status 枚举校验与原子写）；仅端点不可用时降级 file-write，此时须自行保证结构合法（status 仅限六枚举值），否则界面加载会过滤掉脏条目。
-- **先校验后回写**：docker-app 必须健康校验通过、mcp 必须连接校验通过，才回写 `installed`——installed-entries 是「你校验过的事实」，不是「执行过命令」。
-- **中间态是过渡态，你必须回写终态或（卸载/重装失败时）回 `installed`**——绝不把记录停在 `installing`/`reinstalling`/`uninstalling`，否则界面对应操作按钮会禁用、用户被卡住。
+- **先校验后回写**：docker-app 必须健康校验通过才回写 `installed`；mcp 必须连接测试已连通（或需授权
+  `needs_auth`）才注册到 Agent 并回写 `installed`——installed-entries 是「你校验过的事实」，不是「执行过命令」。
+- MCP 配置只按服务端签发的键删除：回滚取本次注册 200 判定输出的 runtimeServerId，残留取注册 409 判定输出的
+  `residue.runtimeServerId`，都用无信封 DELETE、不带 query；不按 entryId 或显示名删除，也不从 agent.json 按后缀
+  猜键。`reclaimed: true` 收回的配置不删除。删除残留、启用本机配置都要先经用户确认。
+- operationId 只来自本条机器消息：不自己生成、不改用账本里新的 operationId、不调用任何
+  `PUT /api/installed-entries`（带不带 `retryOf` 都不行）。用户要求重试时，引导用户到商店重新安装或点「重试」，
+  由界面写新意图并发来新指令。
+- **中间态是过渡态，你必须回写终态或（卸载/重装失败时）回 `installed`**——绝不把记录停在 `installing`/`reinstalling`/`uninstalling`，否则界面对应操作按钮会禁用、用户被卡住。唯一例外是本次已被接替（`superseded`）：记录已归新操作所有，旧操作不得写入。
 
 ## 与其他技能/系统的协作
 
@@ -415,6 +616,19 @@ parameters:
   canonical snapshot；App uninstall 按精确 ownership + lifecycle receipt 解析旧 Git object；只授权
   本次读取，不记录安装事实）。
 - **installed-entries 回写端点**：`PATCH /api/installed-entries/:entryId/:deviceId`（body 携带 sourceId，结构化回写状态，原子写 + 自动广播刷新前端；旧客户端 404 时才降级 file-write）。
-- **agent-service mcp API**：`POST /api/mcp/install`（执行 postInstall + 连接测试）、`POST /api/agents/desirecore/mcp-servers`（注册）、`DELETE /api/agents/desirecore/mcp-servers/:serverId`（卸载）、`POST /api/mcp/test-connection`（验证）。
+- **agent-service mcp API**：
+  - `POST /api/mcp/install`：执行 postInstall + 连接测试。命令失败是 HTTP 200 `success:false`、没有
+    connectionTest；`success:true` 只表示命令成功，连通性看 `data.connectionTest`（`success`、`status`、
+    `errorCode`、`error`）。
+  - `POST /api/mcp/test-connection`：复测。200 时 `data.status` 为 `connected` 或 `needs_auth`；配置非法 400；
+    其它失败 500，带 `errorCode` 与 `error`。
+  - `POST /api/agents/desirecore/mcp-servers`：注册。200 的 `data.runtimeServerId` 是服务端签发的键，收回时另带
+    `data.reclaimed: true`；409 `registry_acquisition_ownership_mismatch` 可能在顶层带 `reasons` 与
+    `runtimeServerId`；500 不保证 agent.json 未被写。用 `evaluate-register-response` 判定。
+  - `DELETE /api/agents/desirecore/mcp-servers/:serverId` 有两种用法，不得混用：卸载用带信封的形式，路径是
+    entryId，query 带 `sourceId`/`deviceId`/`operationId`（由 `build-service-delete` 生成）；回滚与删除残留用
+    无信封形式，路径是服务端签发的 runtimeServerId，不带任何 query，有活回执持有时 409，否则删掉这个名字的
+    配置（200 `removed:true`），键不存在时 200 `removed:false`。误传裸 entryId 时，agent.json 里若有同名配置
+    （例如用户在商店用「添加到 Agent」加过的，或旧的裸键），会被真的删掉，所以绝不能用 entryId 调它。
 - **task-management**：长安装可登记为任务跟踪进度。
 - **service-health**：派生出的服务由后端周期探活，你无需自行维护其健康。

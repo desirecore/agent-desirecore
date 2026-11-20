@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,7 +9,9 @@ import {
   buildInstalledCatalogReceiptPatch,
   buildServiceCatalogDeleteTarget,
   completeServiceCatalogReceipt,
+  evaluateRegistryCatalogRegisterResult,
   evaluateRegistryCatalogResolverResult,
+  inspectRegistryCatalogOperation,
   parseRegistryCatalogAcquisitionMessage,
   parseRegistryCatalogAcquisitionLocatorMessage,
   planRegistryCatalogPreExecutionSettlement,
@@ -18,6 +21,8 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const skillPath = join(here, '..', 'SKILL.md')
+const scriptPath = join(here, '..', 'scripts', 'registry-catalog-acquisition.mjs')
+const legacyServicesPath = join(here, '..', 'references', 'legacy-services.md')
 const commitA = 'a'.repeat(40)
 const commitB = 'b'.repeat(40)
 const operationA = '11111111-1111-4111-8111-111111111111'
@@ -640,6 +645,341 @@ test('Service uninstall authorizes only exact active service receipt and runtime
   }).deleteAllowed, false)
 })
 
+function serviceRequest(overrides = {}) {
+  return { ...request(overrides), kind: 'service' }
+}
+
+function registered(expected, runtimeServerId, extra = {}) {
+  return {
+    success: true,
+    data: {
+      agentId: 'desirecore',
+      serverId: expected.entryId,
+      runtimeServerId,
+      message: 'added',
+      ...extra,
+    },
+  }
+}
+
+test('注册 200 只认服务端签发的复合键，reclaimed 只取 true，收回与重装都不允许回滚', () => {
+  const install = serviceRequest()
+  const composite = registryCatalogRuntimeServerId(install.sourceId, install.entryId)
+  assert.deepEqual(evaluateRegistryCatalogRegisterResult(install, 200, registered(install, composite)), {
+    registered: true,
+    runtimeServerId: composite,
+    reclaimed: false,
+    rollbackAllowed: true,
+  })
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 200, registered(install, composite, { reclaimed: true })),
+    { registered: true, runtimeServerId: composite, reclaimed: true, rollbackAllowed: false }
+  )
+  for (const reclaimed of ['true', 1, false, null]) {
+    assert.deepEqual(
+      evaluateRegistryCatalogRegisterResult(install, 200, registered(install, composite, { reclaimed })),
+      { registered: true, runtimeServerId: composite, reclaimed: false, rollbackAllowed: true }
+    )
+  }
+  const reinstall = serviceRequest({ action: 'reinstall' })
+  assert.deepEqual(evaluateRegistryCatalogRegisterResult(reinstall, 200, registered(reinstall, composite)), {
+    registered: true,
+    runtimeServerId: composite,
+    reclaimed: false,
+    rollbackAllowed: false,
+  })
+})
+
+test('注册 200 的 runtimeServerId 不符或响应畸形时不算已注册、也不得回滚', () => {
+  const install = serviceRequest()
+  const mismatched = {
+    registered: false,
+    residue: null,
+    errorCode: 'registry_catalog_register_runtime_server_id_mismatch',
+    mayRollback: false,
+  }
+  for (const runtimeServerId of [
+    install.entryId,
+    registryCatalogRuntimeServerId('registry:source-b', install.entryId),
+    'well_formed_but_wrong',
+  ]) {
+    assert.deepEqual(evaluateRegistryCatalogRegisterResult(install, 200, registered(install, runtimeServerId)), mismatched)
+  }
+  const invalid = {
+    registered: false,
+    residue: null,
+    errorCode: 'registry_catalog_register_response_invalid',
+    mayRollback: false,
+  }
+  for (const body of [
+    { success: true, data: { serverId: install.entryId } },
+    { success: false, data: { runtimeServerId: registryCatalogRuntimeServerId(install.sourceId, install.entryId) } },
+    { success: true },
+    'not json',
+    null,
+  ]) {
+    assert.deepEqual(evaluateRegistryCatalogRegisterResult(install, 200, body), invalid)
+  }
+})
+
+test('registry:official 的裸键与卸载一致可识别为已注册，但它必然是已有配置，不得回滚', () => {
+  const official = serviceRequest({ sourceId: 'registry:official' })
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(official, 200, registered(official, official.entryId)),
+    { registered: true, runtimeServerId: official.entryId, reclaimed: false, rollbackAllowed: false }
+  )
+  const composite = registryCatalogRuntimeServerId(official.sourceId, official.entryId)
+  assert.equal(
+    evaluateRegistryCatalogRegisterResult(official, 200, registered(official, composite)).rollbackAllowed,
+    true
+  )
+  const other = serviceRequest()
+  assert.equal(
+    evaluateRegistryCatalogRegisterResult(other, 200, registered(other, other.entryId)).registered,
+    false
+  )
+})
+
+test('注册 409 只有两个已知 reasons、复合键与首装同时成立才进入残留出口', () => {
+  const install = serviceRequest()
+  const composite = registryCatalogRuntimeServerId(install.sourceId, install.entryId)
+  const conflict = (reasons, runtimeServerId = composite) => ({
+    success: false,
+    errorCode: 'registry_acquisition_ownership_mismatch',
+    reasons,
+    runtimeServerId,
+  })
+  assert.deepEqual(evaluateRegistryCatalogRegisterResult(install, 409, conflict(['unowned_runtime_config_differs'])), {
+    registered: false,
+    residue: {
+      reason: 'unowned_runtime_config_differs',
+      runtimeServerId: composite,
+      userOptions: ['delete', 'keep'],
+    },
+    errorCode: 'registry_acquisition_ownership_mismatch',
+    mayRollback: false,
+  })
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 409, conflict(['unowned_runtime_config_disabled_local_keys'])),
+    {
+      registered: false,
+      residue: {
+        reason: 'unowned_runtime_config_disabled_local_keys',
+        runtimeServerId: composite,
+        userOptions: ['delete', 'enable_in_editor', 'keep'],
+      },
+      errorCode: 'registry_acquisition_ownership_mismatch',
+      mayRollback: false,
+    }
+  )
+
+  // 旧客户端与新客户端上「意图已不在、系统默认键、official 裸键」都是不带 reasons 的 409
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 409, { success: false, errorCode: 'registry_acquisition_ownership_mismatch' }),
+    { registered: false, residue: null, errorCode: 'registry_acquisition_ownership_mismatch', mayRollback: false }
+  )
+  // 格式合法但不是已知取值：保留有界 reasons，不进残留出口
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 409, conflict(['unowned_runtime_config_unknown'])),
+    {
+      registered: false,
+      residue: null,
+      errorCode: 'registry_acquisition_ownership_mismatch',
+      reasons: ['unowned_runtime_config_unknown'],
+      mayRollback: false,
+    }
+  )
+  for (const body of [
+    conflict(['unowned_runtime_config_differs', 'unowned_runtime_config_disabled_local_keys']),
+    conflict(['unowned_runtime_config_differs'], install.entryId),
+    conflict(['unowned_runtime_config_differs'], registryCatalogRuntimeServerId('registry:source-b', install.entryId)),
+    { success: false, errorCode: 'registry_acquisition_ownership_mismatch', reasons: ['unowned_runtime_config_differs'] },
+    { ...conflict(['unowned_runtime_config_differs']), errorCode: 'registry_acquisition_blocked' },
+  ]) {
+    const result = evaluateRegistryCatalogRegisterResult(install, 409, body)
+    assert.equal(result.registered, false)
+    assert.equal(result.residue, null)
+    assert.equal(result.mayRollback, false)
+  }
+  for (const status of [400, 404, 500]) {
+    assert.equal(
+      evaluateRegistryCatalogRegisterResult(install, status, conflict(['unowned_runtime_config_differs'])).residue,
+      null
+    )
+  }
+  const reinstall = serviceRequest({ action: 'reinstall' })
+  assert.equal(
+    evaluateRegistryCatalogRegisterResult(reinstall, 409, conflict(['unowned_runtime_config_differs'])).residue,
+    null
+  )
+})
+
+test('注册其它失败只保留有界错误码与 reasons，一律不回滚', () => {
+  const install = serviceRequest()
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 409, {
+      success: false,
+      errorCode: 'registry_acquisition_blocked',
+      reasons: ['missing-install-or-connection'],
+    }),
+    {
+      registered: false,
+      residue: null,
+      errorCode: 'registry_acquisition_blocked',
+      reasons: ['missing-install-or-connection'],
+      mayRollback: false,
+    }
+  )
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 409, {
+      success: false,
+      errorCode: 'registry_acquisition_ownership_mismatch',
+      reasons: ['not a bounded reason!'],
+    }),
+    { registered: false, residue: null, errorCode: 'registry_acquisition_ownership_mismatch', mayRollback: false }
+  )
+  // 500 时 agent.json 可能已被写，但不知道是不是本次写的
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 500, { success: false, error: 'removeServerConfig failed' }),
+    { registered: false, residue: null, mayRollback: false }
+  )
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 400, { success: false, error: 'Missing required fields: serverId, config' }),
+    { registered: false, residue: null, mayRollback: false }
+  )
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 499, { success: false, errorCode: 'cancelled' }),
+    { registered: false, residue: null, errorCode: 'cancelled', mayRollback: false }
+  )
+  assert.deepEqual(
+    evaluateRegistryCatalogRegisterResult(install, 502, '<html>bad gateway</html>'),
+    { registered: false, residue: null, mayRollback: false }
+  )
+  assert.throws(() => evaluateRegistryCatalogRegisterResult(request(), 200, {}), /register_expected_invalid/)
+  assert.throws(() => evaluateRegistryCatalogRegisterResult(install, '200', {}), /http_status_invalid/)
+})
+
+test('操作归属复核：恰好一条且 operationId 一致才可结算，被接替、缺失、多条都不得结算或回滚', () => {
+  const install = serviceRequest()
+  const locator = { sourceId: install.sourceId, entryId: install.entryId, operation: install.operation }
+  // 不带 runtimeServerId 的复核只用来判断能否结算，回滚需另做带键的复核
+  assert.deepEqual(inspectRegistryCatalogOperation({ locator, entries: [pendingEntry()] }), {
+    state: 'current',
+    status: 'installing',
+    maySettle: true,
+    mayRollback: false,
+  })
+  assert.deepEqual(inspectRegistryCatalogOperation({ locator, entries: [pendingEntry({ status: 'failed' })] }), {
+    state: 'current',
+    status: 'failed',
+    maySettle: true,
+    mayRollback: false,
+  })
+  const reinstallLocator = { ...locator, operation: { ...install.operation, action: 'reinstall' } }
+  assert.deepEqual(
+    inspectRegistryCatalogOperation({ locator: reinstallLocator, entries: [pendingEntry({ status: 'reinstalling' })] }),
+    { state: 'current', status: 'reinstalling', maySettle: true, mayRollback: false }
+  )
+  assert.deepEqual(
+    inspectRegistryCatalogOperation({
+      locator,
+      entries: [pendingEntry({ operationId: operationB }), pendingEntry({ sourceId: 'registry:source-b' })],
+    }),
+    { state: 'superseded', status: 'installing', maySettle: false, mayRollback: false }
+  )
+  assert.deepEqual(
+    inspectRegistryCatalogOperation({
+      locator,
+      entries: [pendingEntry({ deviceId: 'device-b' }), pendingEntry({ sourceId: 'registry:source-b' })],
+    }),
+    { state: 'missing', maySettle: false, mayRollback: false }
+  )
+  assert.deepEqual(
+    inspectRegistryCatalogOperation({ locator, entries: [pendingEntry(), pendingEntry({ operationId: operationB })] }),
+    { state: 'ambiguous', maySettle: false, mayRollback: false }
+  )
+  // operationId 一致但状态不在六枚举里：无法判断可行迁移，不得当成 current 结算
+  assert.deepEqual(
+    inspectRegistryCatalogOperation({ locator, entries: [pendingEntry({ status: 'pending' })] }),
+    { state: 'ambiguous', maySettle: false, mayRollback: false }
+  )
+  // 记录没有 operationId：不是本次的，按被接替处理
+  const { operationId: _omitted, ...withoutOperationId } = pendingEntry()
+  assert.deepEqual(
+    inspectRegistryCatalogOperation({ locator, entries: [withoutOperationId] }),
+    { state: 'superseded', status: 'installing', maySettle: false, mayRollback: false }
+  )
+  assert.throws(() => inspectRegistryCatalogOperation({ locator, entries: {} }), /inspect_entries_invalid/)
+  assert.throws(() => inspectRegistryCatalogOperation({ locator: null, entries: [] }), /inspect_locator_invalid/)
+  assert.throws(
+    () => inspectRegistryCatalogOperation({ locator, entries: [], stage: 'register' }),
+    /inspect_input_invalid/
+  )
+})
+
+test('回滚前带上 runtimeServerId：别的记录在回执里持有这个键（含 failed）时不得回滚', () => {
+  const install = serviceRequest()
+  const locator = { sourceId: install.sourceId, entryId: install.entryId, operation: install.operation }
+  const composite = registryCatalogRuntimeServerId(install.sourceId, install.entryId)
+  const holder = (status, runtimeServerId = composite) => ({
+    ...pendingEntry({ deviceId: 'device-b', status, operationId: operationB }),
+    catalogReceipt: { kind: 'service', catalogSourceId: install.sourceId, entryId: install.entryId, runtimeServerId },
+  })
+  const inspect = (entries) => inspectRegistryCatalogOperation({ locator, entries, runtimeServerId: composite })
+  assert.deepEqual(inspect([pendingEntry()]), { state: 'current', status: 'installing', maySettle: true, mayRollback: true })
+  // 持有记录是 failed：无信封 DELETE 不会 409，回滚会删掉替换前就有的配置
+  for (const status of ['failed', 'installed', 'reinstalling']) {
+    assert.deepEqual(inspect([pendingEntry(), holder(status)]), {
+      state: 'current',
+      status: 'installing',
+      maySettle: true,
+      mayRollback: false,
+    })
+  }
+  // 已卸载的记录、或持有别的键的记录，都不影响回滚
+  assert.equal(inspect([pendingEntry(), holder('uninstalled')]).mayRollback, true)
+  assert.equal(inspect([pendingEntry(), holder('failed', 'other-key')]).mayRollback, true)
+  // 不带 runtimeServerId 时无法判断持有者，一律不放行回滚
+  assert.equal(inspectRegistryCatalogOperation({ locator, entries: [pendingEntry(), holder('failed')] }).mayRollback, false)
+  assert.equal(inspectRegistryCatalogOperation({ locator, entries: [pendingEntry()] }).mayRollback, false)
+  for (const runtimeServerId of ['', 'bad key', 'x'.repeat(101), 42]) {
+    assert.throws(
+      () => inspectRegistryCatalogOperation({ locator, entries: [pendingEntry()], runtimeServerId }),
+      /inspect_runtime_server_id_invalid/
+    )
+  }
+})
+
+test('evaluate-register-response 与 inspect-operation 子命令读 stdin、输出一行 JSON', () => {
+  const install = serviceRequest()
+  const composite = registryCatalogRuntimeServerId(install.sourceId, install.entryId)
+  const run = (command, input) => spawnSync(process.execPath, [scriptPath, command], {
+    input: JSON.stringify(input),
+    encoding: 'utf8',
+  })
+  const evaluated = run('evaluate-register-response', {
+    expected: install,
+    status: 200,
+    body: registered(install, composite, { reclaimed: true }),
+  })
+  assert.equal(evaluated.status, 0, evaluated.stderr)
+  assert.deepEqual(JSON.parse(evaluated.stdout), {
+    registered: true,
+    runtimeServerId: composite,
+    reclaimed: true,
+    rollbackAllowed: false,
+  })
+  const inspected = run('inspect-operation', {
+    locator: { sourceId: install.sourceId, entryId: install.entryId, operation: install.operation },
+    entries: [pendingEntry({ operationId: operationB })],
+  })
+  assert.equal(inspected.status, 0, inspected.stderr)
+  assert.equal(JSON.parse(inspected.stdout).state, 'superseded')
+  const extraKey = run('evaluate-register-response', { expected: install, status: 200, body: {}, extra: true })
+  assert.equal(extraKey.status, 1)
+  assert.match(extraKey.stderr, /register_evaluation_input_invalid/)
+})
+
 test('Skill-first 正文短而完整、按需提供既有 HTTP 工具、不加载旧 App 状态机', async () => {
   const text = await readFile(skillPath, 'utf8')
   assert.ok(text.split('\n').length <= 60)
@@ -688,4 +1028,61 @@ test('Skill contract has no fixed official/local Registry fallback and resolves 
   assert.match(skill, /operationId=<operationId>/)
   assert.ok(skill.indexOf('解析机器消息并调用 resolver') < skill.indexOf('环境校验'))
   assert.ok(skill.indexOf('### 执行前协议') < skill.indexOf('`docker version`'))
+})
+
+test('MCP 首装先做连接测试再注册，回滚与残留出口只用服务端签发的 runtimeServerId', async () => {
+  const doc = await readFile(legacyServicesPath, 'utf8')
+  const description = doc.split('\n').find((line) => line.startsWith('description:'))
+  assert.ok(description.includes('连接测试'))
+  assert.ok(description.indexOf('连接测试') < description.indexOf('注册到 Agent'))
+  const installFlow = doc.slice(doc.indexOf('### mcp / http-api 服务安装流程'), doc.indexOf('### mcp / http-api 服务卸载流程'))
+  // 只有新流程才有的文字：注册以连接测试结论为前提，连接失败在注册之前就结束；旧文档里这些都不存在
+  const registerStep = installFlow.indexOf('**注册到 Agent**')
+  assert.ok(registerStep > 0)
+  assert.match(installFlow.slice(registerStep, registerStep + 80), /只在第 3 步结论为已连通或需授权时/)
+  const notRegistered = installFlow.indexOf('其它失败：**不注册**')
+  assert.ok(notRegistered > 0 && notRegistered < registerStep)
+  assert.doesNotMatch(doc, /连接校验（先校验后回写，强制）/)
+  assert.match(installFlow, /status === 'needs_auth'/)
+  assert.match(installFlow, /POST \/api\/mcp\/test-connection/)
+  // 旧客户端连接测试失败不带 errorCode 与 status，也允许复测一次
+  assert.match(installFlow, /两者都没有时同样复测一次/)
+  // 回滚前的复核带上 runtimeServerId，回执持有的替换不回滚；回滚 DELETE 不受 operation 约束，复核后立刻执行
+  assert.match(doc, /"runtimeServerId": <注册判定输出的 runtimeServerId>/)
+  assert.match(doc, /这种情况不回滚/)
+  assert.doesNotMatch(doc, /已知边界/)
+  assert.match(doc, /复核后立刻回滚，中间不等待、不询问/)
+  assert.doesNotMatch(doc, /最终以服务端的 409 为准/)
+  // 误传裸 entryId 给无信封 DELETE 会真的删掉同名配置
+  assert.doesNotMatch(doc, /实际什么也没删/)
+  assert.match(doc, /evaluate-register-response/)
+  assert.match(doc, /inspect-operation/)
+  assert.match(doc, /unowned_runtime_config_differs/)
+  assert.match(doc, /unowned_runtime_config_disabled_local_keys/)
+  assert.match(doc, /`reclaimed: true`[^\n]*不回滚/)
+  assert.match(doc, /无信封 `DELETE[^\n]*runtimeServerId[^\n]*不按 entryId/)
+  assert.match(doc, /superseded[^\n]*不结算[^\n]*不回滚/)
+  assert.match(doc, /catalog_operation_mismatch/)
+  // 旧写法「注册后先回滚再结算」不看 reclaimed、也不看操作是否已被接替，不得残留
+  assert.doesNotMatch(doc, /回滚刚注册的/)
+  assert.doesNotMatch(doc, /MCP 回滚注册后结算/)
+  assert.doesNotMatch(doc, /连接校验失败 → 首装 `failed`/)
+  // needs_auth 照常注册，不按失败处理
+  assert.match(installFlow, /`connectionTest\.status === 'needs_auth'`：\*\*需授权\*\*[\s\S]{0,120}照常进入第 4 步注册/)
+  // 残留出口：先结算首装 failed，再询问，用户选择后才删除；删除前重新复核，被接替就不删
+  const residueExit = doc.slice(doc.indexOf('**残留出口**'), doc.indexOf('### mcp / http-api 服务卸载流程'))
+  const settled = residueExit.indexOf('status:failed}` 结算本次首装')
+  const asked = residueExit.indexOf('询问用户选哪条')
+  const deleted = residueExit.indexOf('**删除**')
+  assert.ok(settled > 0 && settled < asked && asked < deleted)
+  assert.match(residueExit.slice(deleted), /^[^]*?只有 `current` 且 status 为 `failed` 才继续[^]*?无信封 `DELETE/)
+  assert.match(doc, /先说明并询问，用户\n选择之前只结算，不删除、不启用/)
+  // 回滚 DELETE 返回 409 时记录仍是 installing，必须照常结算，不得停在中间态
+  assert.match(doc, /\*\*回滚的无信封 DELETE 返回 409\*\*[^\n]*照常用同一 operationId PATCH `failed` 结算/)
+  // 被接替、要求重试时都不得自己写意图
+  assert.match(doc, /不调用任何 PUT（带不带 `retryOf` 都不行）/)
+  // 带 receipt 的 PATCH 显式传 timeout；没有响应时先复核再原样重发，拿到拒绝码前不回滚
+  assert.match(doc, /method: PATCH\n  timeout: 120000/)
+  assert.match(doc, /用完全相同的请求体[^]*?拿到明确的拒绝码之前不回滚/)
+  assert.match(doc, /^version: "1\.5\.0"$/m)
 })
