@@ -21,7 +21,23 @@ const RESOLVER_ERROR_CODES = new Set([
   'registry_acquisition_ownership_mismatch',
 ])
 const INTERMEDIATE_STATUSES = new Set(['installing', 'reinstalling', 'uninstalling'])
+const INSTALLED_ENTRY_STATUSES = new Set([
+  'installing',
+  'reinstalling',
+  'installed',
+  'uninstalling',
+  'failed',
+  'uninstalled',
+])
 const PRE_EXECUTION_STOP_STAGES = new Set(['parse', 'resolver', 'human_gate', 'pre_execution'])
+/**
+ * ADR-371：首装注册遇到复合键上无回执归属的已有配置、又不能收回时，409 带的两个原因（闭集）与各自的用户出路。
+ * differs 指向别的服务端，只能删除或保留；disabled_local_keys 是停用且带本机改动的同一服务端，还可以到编辑器启用。
+ */
+const REGISTER_RESIDUE_USER_OPTIONS = new Map([
+  ['unowned_runtime_config_differs', ['delete', 'keep']],
+  ['unowned_runtime_config_disabled_local_keys', ['delete', 'enable_in_editor', 'keep']],
+])
 
 function fail(code) {
   throw new Error(code)
@@ -224,11 +240,13 @@ export function registryCatalogRuntimeServerId(sourceId, entryId) {
   return `registry_${digest}_${slug}`
 }
 
+function isBoundedIdentifier(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 160 && /^[a-z0-9._:-]+$/i.test(value)
+}
+
 function boundedReasons(value) {
   if (!Array.isArray(value) || value.length > 32) return undefined
-  const reasons = value.filter(
-    (reason) => typeof reason === 'string' && reason.length > 0 && reason.length <= 160 && /^[a-z0-9._:-]+$/i.test(reason)
-  )
+  const reasons = value.filter(isBoundedIdentifier)
   return reasons.length === value.length && reasons.length > 0 ? reasons : undefined
 }
 
@@ -645,6 +663,138 @@ export function evaluateRegistryCatalogResolverResult(expectedValue, status, bod
   }
 }
 
+/**
+ * 判定 MCP 注册（POST /api/agents/desirecore/mcp-servers，带 catalogAcquisition）的响应，决定之后能否回滚、
+ * 能否进入 ADR-371 的残留出口。expected 是 parse-message 输出的 service request。
+ *
+ * - 200：runtimeServerId 必须是本来源加条目的复合键。registry:official 的裸 entryId 与卸载判定
+ *   （resolveServiceUninstallOwnership）一致也接受：服务端只在已有回执声明了裸键、且该键已在 agent.json
+ *   里时才写裸键，所以它一定是替换已有配置，rollbackAllowed 恒为 false。reclaimed 只认 === true（收回了键上原有的
+ *   同一服务端配置）；收回与重装都不回滚。旧客户端不返回 reclaimed，此时首装按原规则可回滚。
+ * - 409 registry_acquisition_ownership_mismatch：reasons 恰好是一个已知取值、runtimeServerId 等于复合键且本次是
+ *   首装时，输出残留出口；不带 reasons 的 409（旧客户端遇到残留、意图已不在或被接替、系统默认键、official 裸键）、
+ *   未知 reasons、键不符都不进出口。
+ * - 其它一切（400/404/499/500、非 JSON、200 但键不符或响应畸形）：registered:false，不删除任何键。500 时 agent.json
+ *   可能已被写入，但无法证明是本次写的，所以同样不回滚。
+ */
+export function evaluateRegistryCatalogRegisterResult(expectedValue, status, body) {
+  const expected = validateRegistryCatalogAcquisitionRequest(expectedValue)
+  if (expected.kind !== 'service') fail('registry_catalog_register_expected_invalid')
+  if (!Number.isInteger(status)) fail('registry_catalog_http_status_invalid')
+  const compositeRuntimeServerId = registryCatalogRuntimeServerId(expected.sourceId, expected.entryId)
+  const notRegistered = (errorCode, reasons) => ({
+    registered: false,
+    residue: null,
+    ...(errorCode ? { errorCode } : {}),
+    ...(reasons ? { reasons } : {}),
+    mayRollback: false,
+  })
+
+  if (status === 200) {
+    const data = isRecord(body) && body.success === true && isRecord(body.data) ? body.data : undefined
+    if (!data || typeof data.runtimeServerId !== 'string' || data.runtimeServerId.length === 0) {
+      return notRegistered('registry_catalog_register_response_invalid')
+    }
+    const runtimeServerId = data.runtimeServerId
+    const officialBareKey = expected.sourceId === 'registry:official' && runtimeServerId === expected.entryId
+    if (runtimeServerId !== compositeRuntimeServerId && !officialBareKey) {
+      return notRegistered('registry_catalog_register_runtime_server_id_mismatch')
+    }
+    const reclaimed = data.reclaimed === true
+    return {
+      registered: true,
+      runtimeServerId,
+      reclaimed,
+      rollbackAllowed: expected.operation.action === 'install' && !reclaimed && !officialBareKey,
+    }
+  }
+
+  const errorCode = isRecord(body) && isBoundedIdentifier(body.errorCode) ? body.errorCode : undefined
+  const reasons = isRecord(body) ? boundedReasons(body.reasons) : undefined
+  const residueReason = reasons?.length === 1 ? reasons[0] : undefined
+  if (
+    status === 409 &&
+    errorCode === 'registry_acquisition_ownership_mismatch' &&
+    expected.operation.action === 'install' &&
+    residueReason !== undefined &&
+    REGISTER_RESIDUE_USER_OPTIONS.has(residueReason) &&
+    body.runtimeServerId === compositeRuntimeServerId
+  ) {
+    return {
+      registered: false,
+      residue: {
+        reason: residueReason,
+        runtimeServerId: compositeRuntimeServerId,
+        userOptions: [...REGISTER_RESIDUE_USER_OPTIONS.get(residueReason)],
+      },
+      errorCode,
+      mayRollback: false,
+    }
+  }
+  return notRegistered(errorCode, reasons)
+}
+
+/**
+ * 复核本次操作是否仍持有账本记录（entries 取 GET /api/installed-entries 的 data.entries）。按
+ * sourceId+entryId+operation.deviceId 找记录：恰好一条且 operationId 相同为 current；operationId 不同说明已被界面
+ * 重试或新指令接替（superseded），记录归新操作所有；没有为 missing；多条为 ambiguous。只有 current 可以结算；
+ * 回滚还要求本次是首装且记录仍是 installing（同时还需注册判定给出 rollbackAllowed:true）。
+ *
+ * 回滚前必须传入注册判定输出的 runtimeServerId（不传时 mayRollback 恒为 false）：任一状态不是 uninstalled 的记录
+ * 在回执里持有这个键时，mayRollback 为 false。
+ * 这时注册是回执持有的普通替换（不带 reclaimed），键上原本就有配置；持有记录都是 failed 时无信封 DELETE 不会 409，
+ * 回滚会删掉替换前就有的配置。
+ */
+export function inspectRegistryCatalogOperation(input) {
+  if (!isRecord(input) || !hasOnlyKeys(input, ['locator', 'entries'], ['runtimeServerId'])) {
+    fail('registry_catalog_inspect_input_invalid')
+  }
+  let runtimeServerId
+  if (input.runtimeServerId !== undefined) {
+    runtimeServerId = requireBoundedString(input.runtimeServerId, 'inspect_runtime_server_id', 100)
+    if (!/^[a-zA-Z0-9._-]+$/.test(runtimeServerId)) fail('registry_catalog_inspect_runtime_server_id_invalid')
+  }
+  if (!isRecord(input.locator) || !hasOnlyKeys(input.locator, ['sourceId', 'entryId', 'operation'])) {
+    fail('registry_catalog_inspect_locator_invalid')
+  }
+  if (!Array.isArray(input.entries)) fail('registry_catalog_inspect_entries_invalid')
+  const sourceId = requireBoundedString(input.locator.sourceId, 'inspect_source_id', 160)
+  const entryId = requireBoundedString(input.locator.entryId, 'inspect_entry_id', 240)
+  if (!SAFE_SOURCE_ID.test(sourceId) || !SAFE_ENTRY_ID.test(entryId)) {
+    fail('registry_catalog_inspect_locator_invalid')
+  }
+  const operation = validateOperation(input.locator.operation)
+  const matches = input.entries.filter((entry) =>
+    isRecord(entry) &&
+    entry.sourceId === sourceId &&
+    entry.entryId === entryId &&
+    entry.deviceId === operation.deviceId
+  )
+  if (matches.length !== 1) {
+    return { state: matches.length === 0 ? 'missing' : 'ambiguous', maySettle: false, mayRollback: false }
+  }
+  const entry = matches[0]
+  const status = INSTALLED_ENTRY_STATUSES.has(entry.status) ? entry.status : undefined
+  if (entry.operationId !== operation.operationId) {
+    return { state: 'superseded', ...(status ? { status } : {}), maySettle: false, mayRollback: false }
+  }
+  // 状态不在六枚举里的记录无法判断归属与可行迁移，按无法确定处理
+  if (!status) return { state: 'ambiguous', maySettle: false, mayRollback: false }
+  const keyHeldByReceipt = runtimeServerId !== undefined && input.entries.some((candidate) =>
+    isRecord(candidate) &&
+    candidate.status !== 'uninstalled' &&
+    isRecord(candidate.catalogReceipt) &&
+    candidate.catalogReceipt.runtimeServerId === runtimeServerId
+  )
+  return {
+    state: 'current',
+    status,
+    maySettle: true,
+    // 回滚是删除动作：缺 runtimeServerId 时判断不了键是否被别的回执持有，一律不放行
+    mayRollback: runtimeServerId !== undefined && operation.action === 'install' && status === 'installing' && !keyHeldByReceipt,
+  }
+}
+
 async function readStdin() {
   const chunks = []
   for await (const chunk of process.stdin) chunks.push(chunk)
@@ -694,7 +844,20 @@ async function main() {
     process.stdout.write(`${JSON.stringify(buildServiceCatalogDeleteTarget(input))}\n`)
     return
   }
-  fail('usage: registry-catalog-acquisition.mjs parse-locator|parse-message|evaluate-response|plan-settlement|validate-receipt-candidate|build-receipt-patch|resolve-service-uninstall|build-service-delete')
+  if (command === 'evaluate-register-response') {
+    const input = JSON.parse(await readStdin())
+    if (!isRecord(input) || !hasOnlyKeys(input, ['expected', 'status'], ['body'])) {
+      fail('registry_catalog_register_evaluation_input_invalid')
+    }
+    process.stdout.write(`${JSON.stringify(evaluateRegistryCatalogRegisterResult(input.expected, input.status, input.body))}\n`)
+    return
+  }
+  if (command === 'inspect-operation') {
+    const input = JSON.parse(await readStdin())
+    process.stdout.write(`${JSON.stringify(inspectRegistryCatalogOperation(input))}\n`)
+    return
+  }
+  fail('usage: registry-catalog-acquisition.mjs parse-locator|parse-message|evaluate-response|plan-settlement|validate-receipt-candidate|build-receipt-patch|resolve-service-uninstall|build-service-delete|evaluate-register-response|inspect-operation')
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
