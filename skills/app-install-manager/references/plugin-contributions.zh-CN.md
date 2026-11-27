@@ -6,19 +6,30 @@
 
 ## 先确认目标和客户端契约
 
-沿通用 v2 流程保存 Plan、解析精确实例并领取实际资源占用。目录首装读取 knowledge.productKind、type、extension、descriptorRequired；writer 提交前会重读同来源/产品，正文不能自报 knownProduct 绕过约束。没有这些知识且包明确是插件/扩展时调查实际客户端支持，不直接沿旧默认应用示例提交。旧客户端不理解 artifact、描述材料或设置 API 时停止并说明需更新，不删字段降级、不读 token 或手写账本。
+沿通用 v2 流程保存 Plan、解析精确实例并领取实际资源占用。目录首装读取 knowledge.productKind、type、extension、descriptorRequired 与 appRelease；writer 提交前会重读同来源/产品，正文不能自报 knownProduct 绕过约束。没有这些知识且包明确是插件/扩展时调查实际客户端支持，不直接沿旧默认应用示例提交。旧客户端不理解 artifact、描述材料或设置 API 时停止并说明需更新，不删字段降级、不读 token 或手写账本。
 
 材料来源是目录提供的固定产品或用户已授权材料。非目录包 sourceId 为 user-managed，id 对应 target.softwareId；不能只改来源标签宣称官方发布。名称不能替代 sourceId + appId + installationId + deviceId + hostInstanceId。
 
+## 目录插件：经固定发行物安装
+
+目录条目的 knowledge 带 appRelease 时（分发生成器为插件生成的条目都带），按[通用 v2 流程](agent-led-installation.zh-CN.md)「固定发行物」一节用 AppAuthoring `prepare_release` → `commit_release` 安装，不用下一节的 deployment.descriptor 与通用观察 PATCH 登记。物化定义为 `productKind: plugin` 时与普通原生应用不同：
+
+- 不启动候选进程、不调用 `runtime_enroll`，也不把插件服务登记为 Agent 的 MCP 服务。插件没有需要纳管的候选：常驻服务由宿主在用户启用后按包内受核验运行描述启动和管理。`prepare_release` 成功后直接提交。
+- 提交回执 `activation: pending`、`reason: plugin_enablement_required` 表示已安装、等待启用，不是失败；不调用 `runtime_read` 或 `runtime_start`。若客户端对插件提交仍返回 `application_runtime_contract_missing`，说明它尚未支持这条路径：停止并说明客户端需更新，不改为纳管候选，也不改用通用观察 PATCH。
+- 随后据实调用 `record_verification`。启用前能核验的只有固定材料、逐文件摘要与客户端能力：这些检查通过才写 verified，scope 写明只核验到这一层，不声称功能已可用。协调器只接入核验为 verified 的安装的贡献；没有 verified 记录时，插件设置会提示安装尚未核验、不接入贡献。
+- 然后请用户到插件设置启用（设置界面背后是下文的 `PATCH /api/installed-entries/<installationId>/extension-settings`；用户明确要求由 Agent 启用时按该接口提交）。启用后的状态以插件设置与对应功能页面为准，启用前的核验记录不代表功能已验证。
+
+这类安装没有 `deployment.descriptor`：宿主从本用户受管的 release 目录读取材料，先核验归属、清单与逐文件摘要，包内引用按相对物化定义文件的路径带摘要读取，常驻服务的安装目录就是该 release 目录。不要为补描述去取 resourceRef、另写 AppDefinition 或再用 PATCH 登记。
+
 ## 准备实际描述材料
 
-在实际安装目录保存 AppDefinition JSON。它包含 sourceId、id、name、version、productKind、entrypoints、placementPolicy，以及贡献关系 extension。plugin 必须至少提供一项真实贡献，可以 entrypoints: []；仅使用依赖的 application 可以 contributes: []，但保留自己的有效入口。configurationSchemaRef、definitionRef、service descriptor 及 Skill 引用必须是包内规范相对路径和实际字节 SHA-256，不复制未核验的内联模型声明。
+以下适用于不带 appRelease 的目录条目与非目录包。在实际安装目录保存 AppDefinition JSON。它包含 sourceId、id、name、version、productKind、entrypoints、placementPolicy，以及贡献关系 extension。plugin 必须至少提供一项真实贡献，可以 entrypoints: []；仅使用依赖的 application 可以 contributes: []，但保留自己的有效入口。configurationSchemaRef、definitionRef、service descriptor 及 Skill 引用必须是包内规范相对路径和实际字节 SHA-256，不复制未核验的内联模型声明。
 
 通过 GET /api/files/resolve-reference?agentId=<当前Agent>&path=<URL编码绝对路径> 获得描述文件的 resourceRef；按原始字节计算 SHA-256。登记 deployment.descriptor: {fileRef: resourceRef, sha256: 实际摘要}，并写实际 type、actualVersion、resources、materials、dataLocations 和 maintenance。描述版本须等于实际登记版本；不把目录版本替代未知部署事实。
 
 目录插件/附属贡献首装的 deployment.type 必须与 knowledge.type 一致，并保留目录主要归属和扩展关系。缺少描述、丢失 extension、把 plugin 写成 application 或改变交付类别都会拒绝；先修复材料再登记，不反复执行软件副作用。纯声明包使用 artifact 且 runtime.kind=declarative，不填虚假端口/进程；MCP/HTTP 服务插件保留真实 native-app/docker-app 部署，其 runtime descriptor 只引用原连接/工具 owner 已登记的身份。运行/注册/授权工具仍走原治理，不因安装插件自动获得权限。
 
-核验约定能力后用唯一 PATCH /api/installed-entries/instances/<installationId> 提交事实。非目录扩展同样提交描述。安装成功只说明安装事实，启用与实际健康分别读取；文档、模型回复或端口响应不能代替真实消费者验证。
+核验约定能力后用唯一 PATCH /api/installed-entries/instances/<installationId> 提交事实（经固定发行物安装的插件除外，见上一节）。非目录扩展同样提交描述。安装成功只说明安装事实，启用与实际健康分别读取；文档、模型回复或端口响应不能代替真实消费者验证。
 
 ## 配置、直接依赖和启停
 
@@ -49,8 +60,8 @@ PATCH /api/installed-entries/<installationId>/extension-settings 提交真实 mu
 
 ## 更新、卸载与自然语言定制
 
-更新/重装（即使版本相同）重新核验 AppDefinition、包内材料及摘要，经原 writer 提交新安装修订；不靠直接改文件热替换正式活动版本。权限扩大需要重新治理，配置必须通过新 Schema；失败不声称自动回滚。
+更新/重装（即使版本相同）重新核验 AppDefinition、包内材料及摘要，经原 writer 提交新安装修订；经固定发行物安装的插件按新的 appRelease 重新 `prepare_release` → `commit_release`，同样不启动候选；不靠直接改文件热替换正式活动版本。权限扩大需要重新治理，配置必须通过新 Schema；失败不声称自动回滚。
 
 卸载先明确停用、共享引用、真实进程及材料范围，默认保留用户数据。确认精确实例 absent 后提交卸载事实；旧描述文件已移除时可保留既有快照用于卸载和完全相同提交重放。已有实例可依据历史记录离线维护，不要求目录仍在架。
 
-维护说明保存描述位置/摘要、配置与启停入口、工具/服务引用、核验方法、更新及共享数据保留规则。自然语言创建纯声明贡献先走客户端支持的会话开发预览，退出释放临时绑定；用户显式保存并使用后才保留正式材料并经过同一登记与设置 owner。不把生成文件或预览称为已安装/已启用，也不绕过审批创建分享/发布制品。
+维护说明保存描述位置/摘要（发行物安装为 release 目录与 releaseDigest）、配置与启停入口、工具/服务引用、核验方法、更新及共享数据保留规则。自然语言创建纯声明贡献先走客户端支持的会话开发预览，退出释放临时绑定；用户显式保存并使用后才保留正式材料并经过同一登记与设置 owner。不把生成文件或预览称为已安装/已启用，也不绕过审批创建分享/发布制品。
