@@ -42,6 +42,7 @@ Only when resolved knowledge contains knowledge.appRelease, use the client's exi
 - Evaluate existing package entry points for preparation. Preserve the actual cwd, data root and original execution owner. Enroll and normally stop candidates through the current tool contract; independent processes or log text are not owner receipts. Native contracts replay the accepted startup command: first select and retain the entry point, cwd, port, data root and environment; do not reselect ports or repeat one-time preparation inside that replayable command.
 - commit_release reports saving and activation separately. When activation=available, recheck with runtime_read; if still available, verify actual function without repeating runtime_start. If the readback or activation is unavailable, read the reason and available actions before choosing a necessary owner start. Denial, identity conflicts and unknown outcomes do not justify blind restarts.
 - After a lost response, query the original submissionId or reread installation/runtime facts. Repair recording failures without repeating installation. Do not save calls by skipping approval, identity checks or treating historical success as live health.
+- Plugin exception (materialized definition `productKind: plugin`): candidate enrollment, startup contracts and runtime_read/runtime_start above do not apply. Do not start a candidate or call runtime_enroll; commit right after a successful prepare_release. A receipt with `activation: pending` and `reason: plugin_enablement_required` means installed and awaiting enablement. Then record_verification truthfully (scoped to fixed material, per-file digests and client capability), and the user enables the plugin in plugin settings. See [Contribution installation and settings](plugin-contributions.md).
 
 ## Resource ownership
 
@@ -51,7 +52,7 @@ Coordinate a conflicting holder rather than changing UUID and executing concurre
 
 ## Verify and record
 
-For plugins and applications with contributions or direct dependencies, first read [Contribution installation and settings](plugin-contributions.md). For a fresh catalog target, knowledge.productKind/type/extension/descriptorRequired come from the server catalog. When a descriptor is required, add the actual deployment.type and descriptor: {fileRef, sha256}. The generic example below does not replace these requirements; missing declarations must not be registered as default applications. Non-catalog declarative artifacts also require a descriptor.
+For plugins and applications with contributions or direct dependencies, first read [Contribution installation and settings](plugin-contributions.md). For a fresh catalog target, knowledge.productKind/type/extension/descriptorRequired come from the server catalog. When a descriptor is required, add the actual deployment.type and descriptor: {fileRef, sha256}. The generic example below does not replace these requirements; missing declarations must not be registered as default applications. Non-catalog declarative artifacts also require a descriptor. Catalog plugins with knowledge.appRelease are committed through the fixed-release flow above, without a descriptor and without the PATCH below.
 
 PATCH /api/installed-entries/instances/{installationId}:
 

@@ -42,6 +42,7 @@ POST /api/registry/acquisitions/resolve，body 为上述对象。只有 success=
 - 准备操作优先评估包内现有入口，保留真实 cwd、数据根和原执行 owner。候选纳管及正常停止按当前工具合同完成，不用独立进程或日志文字冒充。原生合同会重放已接纳的启动命令；先确定并保留入口、cwd、端口、数据根和环境，不在可重放命令中重新探测端口或重做一次性准备。
 - commit_release 的保存事实与 activation 分开。activation=available 时先用 runtime_read 复核；读回仍可用则核验功能，不重复 runtime_start。读回未可用或 activation 未可用时先读原因与可用动作，确需启动才沿原 owner 执行；拒绝、身份冲突或结果未知不构成盲重启的理由。
 - 响应丢失先用原 submissionId 查询提交，或重读实例/运行事实；登记失败只修登记。不要为省调用跳过审批、身份核验或把历史成功当作当前健康。
+- 插件例外（物化定义 `productKind: plugin`）：上面的候选纳管、启动合同与 runtime_read/runtime_start 不适用。不启动候选、不调用 runtime_enroll，prepare_release 成功后直接提交；回执 `activation: pending`、`reason: plugin_enablement_required` 表示已安装待启用。随后据实 record_verification（只核验到固定材料、逐文件摘要与客户端能力），再由用户在插件设置启用。详见[贡献安装与启停](plugin-contributions.zh-CN.md)。
 
 ## 实际资源占用
 
@@ -51,7 +52,7 @@ POST /api/registry/acquisitions/resolve，body 为上述对象。只有 success=
 
 ## 验证并登记
 
-插件、带贡献或直接依赖的普通应用，先读[贡献安装与启停](plugin-contributions.zh-CN.md)。目录首装 `knowledge` 的 `productKind`、`type`、`extension`、`descriptorRequired` 来自服务端目录；需要描述材料时为 deployment 增加真实 `type` 和 `descriptor: {fileRef, sha256}`。下面的通用示例不代替该要求；缺失描述会拒绝，不能把扩展登记成默认应用。非目录声明制品也必须提交描述。
+插件、带贡献或直接依赖的普通应用，先读[贡献安装与启停](plugin-contributions.zh-CN.md)。目录首装 `knowledge` 的 `productKind`、`type`、`extension`、`descriptorRequired` 来自服务端目录；需要描述材料时为 deployment 增加真实 `type` 和 `descriptor: {fileRef, sha256}`。下面的通用示例不代替该要求；缺失描述会拒绝，不能把扩展登记成默认应用。非目录声明制品也必须提交描述。带 knowledge.appRelease 的目录插件经上方固定发行物提交，没有 descriptor，也不用下面的 PATCH。
 
 PATCH /api/installed-entries/instances/{installationId}：
 
